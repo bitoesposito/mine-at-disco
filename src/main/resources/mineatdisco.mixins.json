@@ -1,0 +1,12 @@
+{
+	"required": true,
+	"package": "it.vitoesposito.mineatdisco.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"LivingEntityRendererMixin",
+		"SoundEngineMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

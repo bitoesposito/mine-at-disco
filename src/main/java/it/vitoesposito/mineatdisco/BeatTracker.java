@@ -124,6 +124,12 @@ public final class BeatTracker {
 		return i + (seconds - beats[i]) / (beats[i + 1] - beats[i]);
 	}
 
+	/** Inverse of beatAt, for a beat position inside the tracked beats. */
+	public static double timeAt(double[] beats, double beat) {
+		int i = Math.min((int) beat, beats.length - 2);
+		return beats[i] + (beat - i) * (beats[i + 1] - beats[i]);
+	}
+
 	public static double bpm(double[] beats) {
 		return beats.length < 2 ? 0 : 60 * (beats.length - 1) / (beats[beats.length - 1] - beats[0]);
 	}
@@ -172,6 +178,8 @@ public final class BeatTracker {
 		}
 		check(beatAt(beats, beats[0] - 1) == -1, "before the first beat");
 		check(Math.abs(beatAt(beats, (beats[3] + beats[4]) / 2) - 3.5) < 1e-9, "halfway through beat 3");
+		check(Math.abs(timeAt(beats, 3.5) - (beats[3] + beats[4]) / 2) < 1e-9, "time of beat 3.5");
+		check(timeAt(beats, beats.length - 1) == beats[beats.length - 1], "time of the last beat");
 		System.out.println("ok: " + beats.length + " beats at " + bpm(beats) + " BPM");
 	}
 

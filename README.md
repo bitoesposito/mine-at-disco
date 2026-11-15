@@ -2,7 +2,11 @@
 
 A Fabric mod for Minecraft Java 26.3 that plays your own music and syncs the game to its beat.
 
-For now it plays a song, finds its beats, and draws a square around the crosshair that closes on every beat. Nothing else reacts to the music yet.
+While a song plays:
+
+- A square around the crosshair closes on every beat.
+- World sounds such as mining, footsteps and hits wait for the next sixteenth note, so the game plays in time with the song.
+- Mobs nod on the pulse.
 
 ## Use
 

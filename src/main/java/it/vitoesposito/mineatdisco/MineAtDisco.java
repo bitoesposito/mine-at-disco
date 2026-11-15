@@ -12,8 +12,12 @@ import java.nio.IntBuffer;
 import java.nio.ShortBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
@@ -25,6 +29,8 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.resources.sounds.SoundInstance;
+import net.minecraft.client.resources.sounds.TickableSoundInstance;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
@@ -37,26 +43,41 @@ import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.system.libc.LibCStdlib;
 
-/** Plays a song from the disco folder and pulses the crosshair on its beat. */
+/** Plays a song from the disco folder and moves the game to its beat. */
 public final class MineAtDisco implements ClientModInitializer {
 	private static final Path SONGS = FabricLoader.getInstance().getGameDir().resolve("disco");
 	private static final Path OFFSET_FILE = SONGS.resolve("offset.txt");
+	/** World sounds wait for one of this many grid lines per beat. */
+	private static final int GRID = 4;
+	/** A sound this soon after a grid line, as a share of a grid step, plays at once. */
+	private static final double ON_GRID = 0.2;
+	private static final Set<SoundSource> WORLD_SOUNDS =
+			EnumSet.of(SoundSource.BLOCKS, SoundSource.PLAYERS, SoundSource.HOSTILE, SoundSource.NEUTRAL);
 
 	private record Song(ShortBuffer pcm, int channels, int sampleRate, double[] beats) {
 	}
 
+	private record Deferred(SoundInstance sound, double due) {
+	}
+
 	// OpenAL handles, 0 while nothing plays. The mod owns its source so it can read the exact playback position.
-	private int source;
-	private int buffer;
-	private int sampleRate;
-	private double[] beats = {};
-	private boolean paused;
-	/** Largest (audio position - system clock) seen since the last start or resume, see position(). */
-	private double anchor;
-	/** Seconds to delay the pulse, to make up for audio output latency. */
-	private double offset;
+	private static int source;
+	private static int buffer;
+	private static int sampleRate;
+	private static double[] beats = {};
+	private static boolean paused;
+	/** Largest (audio position - system clock) seen since the last start or resume, see played(). */
+	private static double anchor;
+	/** Seconds to delay what you see, to make up for audio output latency. */
+	private static double offset;
 	/** Counts play and stop requests, so a song that finishes loading late knows it was replaced. */
-	private int request;
+	private static int request;
+	/** Beats per pulse: 2 for fast songs, where moving on every beat looks frantic. */
+	private static int stride = 1;
+	/** Beat position for this frame, -1 outside the tracked beats. Saves asking OpenAL once per entity. */
+	private static double beatNow = -1;
+	private static final List<Deferred> deferred = new ArrayList<>();
+	private static boolean releasing;
 
 	@Override
 	public void onInitializeClient() {
@@ -66,9 +87,9 @@ public final class MineAtDisco implements ClientModInitializer {
 		} catch (IOException | NumberFormatException e) {
 			// No saved offset yet.
 		}
-		ClientTickEvents.END_CLIENT_TICK.register(this::tick);
+		ClientTickEvents.END_CLIENT_TICK.register(MineAtDisco::tick);
 		HudElementRegistry.attachElementAfter(VanillaHudElements.CROSSHAIR,
-				Identifier.fromNamespaceAndPath("mineatdisco", "beat"), this::drawBeat);
+				Identifier.fromNamespaceAndPath("mineatdisco", "beat"), MineAtDisco::drawBeat);
 		ClientCommandRegistrationCallback.EVENT.register((dispatcher, context) -> dispatcher.register(literal("disco")
 				.then(literal("play").then(argument("song", StringArgumentType.greedyString())
 						.suggests((command, builder) -> SharedSuggestionProvider.suggest(songs(), builder))
@@ -80,6 +101,56 @@ public final class MineAtDisco implements ClientModInitializer {
 				}))
 				.then(literal("offset").then(argument("ms", IntegerArgumentType.integer(-500, 500))
 						.executes(command -> setOffset(command.getSource(), IntegerArgumentType.getInteger(command, "ms")))))));
+	}
+
+	/** 1 on the pulse, easing to 0 before the next one. */
+	public static float pulse() {
+		if (beatNow < 0) {
+			return 0;
+		}
+		// ponytail: which beat of a pair carries the pulse is arbitrary. Pick the louder one if it looks off.
+		double left = 1 - beatNow / stride % 1;
+		return (float) (left * left);
+	}
+
+	/**
+	 * Holds a world sound until the next grid line of the song, so the game plays in time with it.
+	 * Returns false when the sound should play now.
+	 * ponytail: this catches every world sound, not only the ones the player causes.
+	 */
+	public static boolean defer(SoundInstance sound) {
+		if (releasing || source == 0 || paused || !WORLD_SOUNDS.contains(sound.getSource())
+				|| sound.isLooping() || sound instanceof TickableSoundInstance) {
+			return false;
+		}
+		// Sounds share the song's output latency, so they follow the audio position without the offset.
+		double grid = BeatTracker.beatAt(beats, played()) * GRID;
+		if (grid < 0 || grid % 1 < ON_GRID) {
+			return false;
+		}
+		deferred.add(new Deferred(sound, BeatTracker.timeAt(beats, Math.ceil(grid) / GRID)));
+		return true;
+	}
+
+	/** Runs once per frame: refreshes the beat and plays the deferred sounds that are due. */
+	public static void frame(Consumer<SoundInstance> play) {
+		double now = source == 0 ? Double.MAX_VALUE : played();
+		beatNow = source == 0 ? -1 : BeatTracker.beatAt(beats, now - offset);
+		if (deferred.isEmpty()) {
+			return;
+		}
+		releasing = true;
+		try {
+			deferred.removeIf(held -> {
+				if (held.due() > now) {
+					return false;
+				}
+				play.accept(held.sound());
+				return true;
+			});
+		} finally {
+			releasing = false;
+		}
 	}
 
 	/** Song names are the .ogg files in the disco folder, without the extension. */
@@ -95,7 +166,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 	}
 
-	private int play(FabricClientCommandSource command, String name) {
+	private static int play(FabricClientCommandSource command, String name) {
 		// Matching against the listing also keeps the name from pointing outside the folder.
 		if (!songs().contains(name)) {
 			command.sendError(Component.translatable("mineatdisco.not_found", name, SONGS.toString()));
@@ -111,7 +182,8 @@ public final class MineAtDisco implements ClientModInitializer {
 			} else if (mine != request) {
 				LibCStdlib.free(song.pcm());
 			} else {
-				start(song, command.getClient());
+				float volume = command.getClient().options.getFinalSoundSourceVolume(SoundSource.MUSIC);
+				start(song, volume);
 				command.sendFeedback(Component.translatable("mineatdisco.playing", name, Math.round(BeatTracker.bpm(beats))));
 			}
 		}, command.getClient());
@@ -142,7 +214,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 	}
 
-	private void start(Song song, Minecraft client) {
+	private static void start(Song song, float volume) {
 		buffer = AL10.alGenBuffers();
 		AL10.alBufferData(buffer, song.channels() == 1 ? AL10.AL_FORMAT_MONO16 : AL10.AL_FORMAT_STEREO16,
 				song.pcm(), song.sampleRate());
@@ -150,10 +222,11 @@ public final class MineAtDisco implements ClientModInitializer {
 		source = AL10.alGenSources();
 		AL10.alSourcei(source, AL10.AL_BUFFER, buffer);
 		AL10.alSourcei(source, AL10.AL_SOURCE_RELATIVE, AL10.AL_TRUE); // Play at the listener, not somewhere in the world.
-		AL10.alSourcef(source, AL10.AL_GAIN, client.options.getFinalSoundSourceVolume(SoundSource.MUSIC));
+		AL10.alSourcef(source, AL10.AL_GAIN, volume);
 		AL10.alSourcePlay(source);
 		sampleRate = song.sampleRate();
 		beats = song.beats();
+		stride = BeatTracker.bpm(beats) > 150 ? 2 : 1;
 		paused = false;
 		anchor = Double.NEGATIVE_INFINITY;
 	}
@@ -163,11 +236,11 @@ public final class MineAtDisco implements ClientModInitializer {
 	 * ponytail: a restart can hand our old ids to a vanilla sound, though both ids matching is unlikely. Hook
 	 * SoundEngine.destroy with a mixin if it ever happens.
 	 */
-	private boolean alive() {
+	private static boolean alive() {
 		return source != 0 && AL10.alIsSource(source) && AL10.alGetSourcei(source, AL10.AL_BUFFER) == buffer;
 	}
 
-	private void stop() {
+	private static void stop() {
 		request++;
 		if (alive()) {
 			AL10.alSourceStop(source);
@@ -178,7 +251,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		beats = new double[0];
 	}
 
-	private void tick(Minecraft client) {
+	private static void tick(Minecraft client) {
 		if (source == 0) {
 			return;
 		}
@@ -199,8 +272,8 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 	}
 
-	/** Audio position in seconds, shifted by the calibration offset. */
-	private double position() {
+	/** Audio position in seconds. */
+	private static double played() {
 		double played = AL10.alGetSourcei(source, AL11.AL_SAMPLE_OFFSET) / (double) sampleRate;
 		if (!paused) {
 			// OpenAL moves the offset once per mixer period, about 20 ms, so every reading is slightly stale.
@@ -210,24 +283,20 @@ public final class MineAtDisco implements ClientModInitializer {
 			anchor = Math.max(anchor, played - now);
 			played = now + anchor;
 		}
-		return played - offset;
+		return played;
 	}
 
 	/** A square that closes on the crosshair and lands on the beat. */
-	private void drawBeat(GuiGraphicsExtractor gui, DeltaTracker delta) {
-		if (source == 0) {
+	private static void drawBeat(GuiGraphicsExtractor gui, DeltaTracker delta) {
+		if (beatNow < 0) {
 			return;
 		}
-		double beat = BeatTracker.beatAt(beats, position());
-		if (beat < 0) {
-			return;
-		}
-		float phase = (float) (beat % 1);
+		float phase = (float) (beatNow % 1);
 		int size = 9 + 2 * Math.round(12 * (1 - phase));
 		gui.outline((gui.guiWidth() - size) / 2, (gui.guiHeight() - size) / 2, size, size, ARGB.white(0.2f + 0.8f * phase));
 	}
 
-	private int setOffset(FabricClientCommandSource command, int ms) {
+	private static int setOffset(FabricClientCommandSource command, int ms) {
 		offset = ms / 1000.0;
 		try {
 			Files.writeString(OFFSET_FILE, Integer.toString(ms));
