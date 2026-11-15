@@ -9,7 +9,7 @@ import org.spongepowered.asm.mixin.injection.At;
 /** Breathes the camera in and out with the bar. */
 @Mixin(Camera.class)
 public abstract class CameraMixin {
-	private static final float ZOOM = 0.12f;
+	private static final float ZOOM = 0.09f;
 
 	@ModifyReturnValue(method = "calculateFov", at = @At("RETURN"))
 	private float mineatdisco$breathe(float fov) {
