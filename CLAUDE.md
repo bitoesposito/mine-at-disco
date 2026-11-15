@@ -18,6 +18,8 @@ Tuning the owner asked for, in order:
 3. Mobs dance like the plushies in a short the owner shared, all in sync. At full size it was far too much, so it runs at 30%: one hop every two beats that lands on beats 1 and 3, a squash on landing, a sway of the hips across the bar.
 4. The bar must start on the real "one" of the song. The tracker picks the heaviest beat of the eight-beat phrase from the bass, and the gold pip under the crosshair shows it.
 5. Mining must sound clearly in time, so the mod plays its own hit on every eighth note instead of vanilla's 200 ms timer.
+6. The FOV breath came back down to 9% at full loudness: 15% felt too strong while moving.
+7. Breaking a block runs a velocity ramp over two beats: the visual beat and particle motion slow down, then speed up and land back on the real beat. The music never changes pace.
 
 ## Code map
 
@@ -25,14 +27,14 @@ Tuning the owner asked for, in order:
 - `MineAtDisco.java` holds everything else: `/disco play|stop|offset`, playback on the mod's own OpenAL source, the audio clock, the sound grid, mining, breaking and placing effects, leaves, the HUD.
 - `mixin/SoundEngineMixin` holds world sounds until the next grid line and calls `frame()` once per frame.
 - `mixin/ClientLevelMixin` takes over the mining hit effect and the block break burst.
-- `mixin/LivingEntityRendererMixin` is the mob and player dance. `mixin/CameraMixin` is the FOV breath. `mixin/SingleQuadParticleMixin` swells particles. `mixin/FallingLeavesInvoker` sheds leaves.
+- `mixin/LivingEntityRendererMixin` is the mob and player dance. `mixin/CameraMixin` is the FOV breath. `mixin/SingleQuadParticleMixin` swells particles and `mixin/ParticleMixin` bends their motion during a ramp. `mixin/FallingLeavesInvoker` sheds leaves.
 - User-facing text lives in `assets/mineatdisco/lang/en_us.json`. Never hardcode a string the player sees.
 
 ## Timing
 
 - `played()` is the audio position: OpenAL's sample offset, smoothed with the system clock because OpenAL updates it about every 20 ms.
 - Sounds follow the audio position. Visuals follow `played() - offset`, which `/disco offset` calibrates for output latency.
-- `beat()` counts from the first beat of a phrase: `beat % 4` is the position in the bar, `beat % 8` in the phrase.
+- `beat()` counts from the first beat of a phrase: `beat % 4` is the position in the bar, `beat % 8` in the phrase. During a velocity ramp it lags behind the real beat and then catches up.
 - Grid: footsteps, mining and breaking fall on eighth notes, other world sounds on the next sixteenth. A sound in the first 20% of a grid step plays at once.
 
 ## Working method

@@ -72,6 +72,8 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static final double MINING_GRACE = 0.3;
 	/** Chips per mining hit on the first beat of the bar at full loudness. */
 	private static final int CHIPS = 20;
+	/** Length of the slow-motion and speed-up after a block breaks. */
+	private static final double RAMP_BEATS = 2;
 
 	private record Song(ShortBuffer pcm, int channels, int sampleRate, double[] beats, float[] energy) {
 	}
@@ -99,6 +101,11 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static int lastEighth = -1;
 	/** Loudness of the song right now, eased: it rises fast on a drop and falls slowly into a break. */
 	private static float energyNow;
+	/** Visual beat without the ramp, where the running ramp began (NaN when none runs), and how deep it goes. */
+	private static double beatRaw = -1;
+	private static double rampStart = Double.NaN;
+	private static float rampDepth;
+	private static float particleSpeed = 1;
 	// The block the player mines, and the audio time the game last reported a hit on it.
 	private static BlockPos miningPos;
 	private static Direction miningSide;
@@ -157,6 +164,11 @@ public final class MineAtDisco implements ClientModInitializer {
 	/** 0 while the player stands still with a steady view, 1 while walking or looking around. Eased over time. */
 	public static float motion() {
 		return motion;
+	}
+
+	/** How fast particles move: 1 normally, below 1 in slow motion, above 1 while catching up. */
+	public static float particleSpeed() {
+		return particleSpeed;
 	}
 
 	/** How big every effect is: 0.25 in the quietest part of the song, 1.25 in the loudest. */
@@ -239,15 +251,40 @@ public final class MineAtDisco implements ClientModInitializer {
 			for (int i = 1 + Math.round(2 * energyNow); level != null && i > 0; i--) {
 				level.addDestroyBlockEffect(at, state);
 			}
+			if (Double.isNaN(rampStart) && beatRaw >= 0) {
+				rampStart = beatRaw;
+				rampDepth = 0.4f + 0.45f * energyNow;
+			}
 		}, Double.isNaN(due) ? 0 : due));
 		return true;
+	}
+
+	/**
+	 * Like a velocity edit, a broken block slows the visuals down and then speeds them up until they catch the beat
+	 * again. The music keeps its pace: only the visual beat and particle motion bend. Speed follows 1 - depth * sin,
+	 * so it starts and ends at normal speed without a jump, and the visual beat lands back on the real one.
+	 */
+	private static void ramp() {
+		beatNow = beatRaw;
+		particleSpeed = 1;
+		if (Double.isNaN(rampStart)) {
+			return;
+		}
+		double u = (beatRaw - rampStart) / RAMP_BEATS;
+		if (beatRaw < 0 || u < 0 || u >= 1) {
+			rampStart = Double.NaN;
+			return;
+		}
+		beatNow = rampStart + RAMP_BEATS * (u + rampDepth * (Math.cos(2 * Math.PI * u) - 1) / (2 * Math.PI));
+		particleSpeed = 1 - rampDepth * (float) Math.sin(2 * Math.PI * u);
 	}
 
 	/** Runs once per frame: refreshes the beat and the loudness, then runs the effects that are due. */
 	public static void frame() {
 		double now = source == 0 ? Double.MAX_VALUE : played();
 		double audioBeat = source == 0 ? -1 : BeatTracker.beatAt(beats, now);
-		beatNow = source == 0 ? -1 : BeatTracker.beatAt(beats, now - offset);
+		beatRaw = source == 0 ? -1 : BeatTracker.beatAt(beats, now - offset);
+		ramp();
 		long nanos = System.nanoTime();
 		float elapsed = Math.min(0.1f, (nanos - lastFrame) / 1e9f);
 		lastFrame = nanos;
