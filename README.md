@@ -7,7 +7,7 @@ While a song plays:
 - A square around the crosshair closes on every beat, and four pips below it count the bar.
 - The hotbar hops and particles swell on each beat, hardest on the first beat of the bar.
 - The camera breathes in and out with the bar while you move, and rests when you stand still.
-- Mobs dance: they bounce on every beat, lean from side to side and nod.
+- Mobs and players dance like plushies, all in sync: flat and wide on the beat, tall and thin between beats, swaying their hips and nodding.
 - Trees shed leaves when a bar opens.
 - World sounds wait for the song's grid. Mining and footsteps fall on eighth notes, other sounds on the next sixteenth.
 
