@@ -1,0 +1,10 @@
+.gradle/
+build/
+run/
+.idea/
+.vscode/
+*.iml
+
+# Songs are copyrighted, keep them local.
+music/
+*:Zone.Identifier
