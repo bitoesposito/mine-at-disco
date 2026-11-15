@@ -88,6 +88,12 @@ public final class MineAtDisco implements ClientModInitializer {
 	 * file got a new name and old values, which would count the latency twice, are left behind.
 	 */
 	private static final Path OFFSET_FILE = SONGS.resolve("audio-offset.txt");
+	/** Warm-up taps skipped before the offset follows, like lazer's tap-for-BPM button skips its first four. */
+	private static final int TAPS_TO_IGNORE = 2;
+	/** Most recent taps the offset is the median of, so one stray tap moves nothing. */
+	private static final int TAPS_KEPT = 16;
+	/** Deliberate clicks near the beat the suggested offset waits for, like lazer's suggestion from hit errors. */
+	private static final int CLICKS_FOR_SUGGESTION = 16;
 	/** Longest frame time used to draw a frame ahead, see visualTime. */
 	private static final double MAX_FRAME_LEAD = 0.025;
 	/** A sound this soon after a grid line, as a share of a grid step, plays at once. */
@@ -194,9 +200,10 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static KeyMapping tapKey;
 	private static boolean openMenu;
 	private static String currentSong = "";
-	private static double tapSum;
-	private static int tapCount;
+	private static final List<Double> taps = new ArrayList<>();
 	private static double lastTapAt = Double.NEGATIVE_INFINITY;
+	/** How far deliberate clicks near the beat landed from it, in seconds, see suggestedOffset. */
+	private static final List<Double> clickErrors = new ArrayList<>();
 	private static final List<Deferred> deferred = new ArrayList<>();
 	private static boolean releasing;
 
@@ -449,6 +456,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		double beat = audioBeatNow;
 		boolean onBeat = beat >= 0 && Math.abs(beat - Math.round(beat)) <= BEAT_WINDOW;
 		lastAttackAt = System.nanoTime() / 1e9;
+		noteClick();
 		int id = target.getId();
 		double due = nextLine(2);
 		if (onBeat) {
@@ -1129,44 +1137,81 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 	}
 
-	/** Calibrates the visual offset from the player tapping in time with the beat they hear. */
+	/**
+	 * Calibrates the offset from the player tapping in time with the beat they hear: the first taps warm up, then the
+	 * offset is the median of the latest ones. A pause of 2.5 s starts over.
+	 * ponytail: taps are measured from the nearest beat, so an offset beyond half a beat needs /disco offset.
+	 */
 	private static void tapOffset() {
 		if (source == 0 || paused || beats.length < 2) {
 			return;
 		}
 		// The player taps to what they hear, which the speakers play a device latency after the mixer.
 		double now = played() - latency;
-		double raw = BeatTracker.beatAt(beats, now);
-		int index = Mth.clamp((int) Math.round(raw < 0 ? 0 : raw), 0, beats.length - 1);
-		double period = index + 1 < beats.length ? beats[index + 1] - beats[index] : beats[index] - beats[index - 1];
-		if (period <= 0) {
+		double error = beatError(now);
+		if (Double.isNaN(error)) {
 			return;
 		}
-		double diff = now - beats[index];
-		diff -= period * Math.rint(diff / period);
 		if (now - lastTapAt > 2.5) {
-			tapCount = 1;
-			tapSum = diff;
-		} else {
-			double avg = tapSum / tapCount;
-			double delta = diff - avg;
-			delta -= period * Math.rint(delta / period);
-			diff = avg + delta;
-			if (tapCount < 8) {
-				tapCount++;
-				tapSum += diff;
-			} else {
-				tapSum = tapSum * 7 / 8 + diff;
-			}
+			taps.clear();
 		}
 		lastTapAt = now;
-		int ms = Mth.clamp((int) Math.round(tapSum / tapCount * 1000), -500, 500);
-		saveOffset(ms);
+		taps.add(error);
 		Minecraft client = Minecraft.getInstance();
 		client.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.2f));
+		if (taps.size() <= TAPS_TO_IGNORE) {
+			if (client.player != null) {
+				client.player.sendOverlayMessage(Component.translatable("mineatdisco.tap.more", taps.size(), TAPS_TO_IGNORE + 1));
+			}
+			return;
+		}
+		int ms = Mth.clamp((int) Math.round(median(taps.subList(Math.max(TAPS_TO_IGNORE, taps.size() - TAPS_KEPT), taps.size())) * 1000), -500, 500);
+		saveOffset(ms);
 		if (client.player != null) {
 			client.player.sendOverlayMessage(Component.translatable("mineatdisco.offset", ms));
 		}
+	}
+
+	/**
+	 * Notes how far a deliberate click, a hit or a used block, landed from the beat. Only clicks within a quarter beat
+	 * count, since most clicks in Minecraft aren't meant as music.
+	 */
+	public static void noteClick() {
+		if (!active() || beats.length < 2) {
+			return;
+		}
+		// Measured on the time the mod thinks the player hears: clicks late on average mean the offset is too small.
+		double time = played() - latency - offset;
+		double error = beatError(time);
+		double beat = Math.round(BeatTracker.beatAt(beats, time));
+		if (Double.isNaN(error) || Math.abs(error) > (BeatTracker.timeAt(beats, beat + 1) - BeatTracker.timeAt(beats, beat)) / 4) {
+			return;
+		}
+		clickErrors.add(error);
+		if (clickErrors.size() > 4 * CLICKS_FOR_SUGGESTION) {
+			clickErrors.remove(0);
+		}
+	}
+
+	/** The offset in ms that centers the player's deliberate clicks on the beat, or null without enough of them. */
+	private static Integer suggestedOffset() {
+		if (clickErrors.size() < CLICKS_FOR_SUGGESTION) {
+			return null;
+		}
+		double shift = median(clickErrors);
+		return Math.abs(shift) < 0.008 ? null : Mth.clamp((int) Math.round((offset + shift) * 1000), -500, 500);
+	}
+
+	/** Seconds from the nearest beat to {@code time} on the song timeline, NaN outside the tracked beats. */
+	private static double beatError(double time) {
+		double beat = BeatTracker.beatAt(beats, time);
+		return beat < 0 ? Double.NaN : time - BeatTracker.timeAt(beats, Math.round(beat));
+	}
+
+	private static double median(List<Double> values) {
+		double[] sorted = values.stream().mapToDouble(Double::doubleValue).sorted().toArray();
+		int middle = sorted.length / 2;
+		return sorted.length % 2 == 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 	}
 
 	/** Returns null when the file is not Ogg Vorbis in mono or stereo. */
@@ -1407,6 +1452,8 @@ public final class MineAtDisco implements ClientModInitializer {
 
 	private static boolean saveOffset(int ms) {
 		offset = ms / 1000.0;
+		// Click errors were measured against the old offset.
+		clickErrors.clear();
 		try {
 			Files.writeString(OFFSET_FILE, Integer.toString(ms));
 			return true;
@@ -1432,6 +1479,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		private static final int PAGE_SIZE = 4;
 		private int page;
 		private List<String> list = List.of();
+		private Button apply;
 
 		private DiscoScreen() {
 			super(Component.translatable("mineatdisco.menu.title"));
@@ -1460,6 +1508,12 @@ public final class MineAtDisco implements ClientModInitializer {
 					.bounds(cx + 56, top, 44, 20).build());
 			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.stop"),
 					b -> stop()).bounds(cx + 104, top, 52, 20).build());
+			apply = addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.apply"), b -> {
+				Integer suggestion = suggestedOffset();
+				if (suggestion != null) {
+					saveOffset(suggestion);
+				}
+			}).bounds(cx + 100, 64, 56, 16).build());
 
 			list = songs();
 			int pages = Math.max(1, (list.size() + PAGE_SIZE - 1) / PAGE_SIZE);
@@ -1485,13 +1539,18 @@ public final class MineAtDisco implements ClientModInitializer {
 		@Override
 		public void extractBackground(GuiGraphicsExtractor gui, int mouseX, int mouseY, float partialTick) {
 			// Keep the center around the crosshair clear so the beat cue and pips stay visible while calibrating.
-			gui.fill(width / 2 - 164, 6, width / 2 + 164, 62, 0x90000000);
+			gui.fill(width / 2 - 164, 6, width / 2 + 164, suggestedOffset() == null ? 62 : 84, 0x90000000);
 		}
 
 		@Override
 		public void extractRenderState(GuiGraphicsExtractor gui, int mouseX, int mouseY, float partialTick) {
+			Integer suggestion = suggestedOffset();
+			apply.visible = suggestion != null;
 			super.extractRenderState(gui, mouseX, mouseY, partialTick);
 			int cx = width / 2;
+			if (suggestion != null) {
+				gui.centeredText(font, Component.translatable("mineatdisco.menu.suggested", suggestion), cx - 30, 68, 0xFFCCCCCC);
+			}
 			Component status = source != 0 && beats.length >= 2
 					? Component.translatable("mineatdisco.playing", currentSong, Math.round(BeatTracker.bpm(beats)))
 					: Component.translatable("mineatdisco.menu.idle");

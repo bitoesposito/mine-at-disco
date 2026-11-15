@@ -8,6 +8,7 @@
 	"mineatdisco.not_found": "No song named %s. Put .ogg files in %s",
 	"mineatdisco.failed": "Could not load %s. It must be an Ogg Vorbis file in mono or stereo",
 	"mineatdisco.offset": "Audio offset is now %s ms",
+	"mineatdisco.tap.more": "Keep tapping to the beat (%s/%s)",
 	"mineatdisco.offset_not_saved": "Audio offset is %s ms until you quit. It could not be saved",
 	"mineatdisco.menu.title": "Mine at Disco",
 	"mineatdisco.menu.idle": "No song playing",
@@ -19,6 +20,8 @@
 	"mineatdisco.menu.later": "+10 ms",
 	"mineatdisco.menu.tap": "Tap (Space)",
 	"mineatdisco.menu.stop": "Stop",
+	"mineatdisco.menu.suggested": "Your timing suggests %s ms",
+	"mineatdisco.menu.apply": "Apply",
 	"mineatdisco.menu.prev": "<",
 	"mineatdisco.menu.next": ">",
 	"mineatdisco.menu.empty": "Put .ogg files in %s"

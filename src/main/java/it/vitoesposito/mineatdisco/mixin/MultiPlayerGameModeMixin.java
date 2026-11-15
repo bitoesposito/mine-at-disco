@@ -5,11 +5,15 @@ import com.llamalad7.mixinextras.sugar.Local;
 import it.vitoesposito.mineatdisco.MineAtDisco;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.MultiPlayerGameMode;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.phys.BlockHitResult;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -85,6 +89,12 @@ public abstract class MultiPlayerGameModeMixin {
 	@Inject(method = "stopDestroyBlock", at = @At("HEAD"))
 	private void mineatdisco$stop(CallbackInfo info) {
 		MineAtDisco.stopMining();
+	}
+
+	@Inject(method = "useItemOn", at = @At("HEAD"))
+	private void mineatdisco$use(LocalPlayer player, InteractionHand hand, BlockHitResult hit,
+			CallbackInfoReturnable<InteractionResult> info) {
+		MineAtDisco.noteClick();
 	}
 
 	@Inject(method = "attack", at = @At("HEAD"))
