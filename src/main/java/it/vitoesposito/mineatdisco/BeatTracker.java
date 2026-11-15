@@ -203,7 +203,8 @@ public final class BeatTracker {
 	 * Picks the beat an action that takes {@code duration} beats should land on, close to {@code ideal}. Repeated
 	 * actions drift toward strong beats: one that takes about a bar lands on beat 1, one that takes about two beats on
 	 * beats 1 and 3. Each landing moves at most 30% of the duration, so a chain settles onto the strong beat over a
-	 * few repeats. Ties go to the later beat, which never asks the server for a break it would refuse.
+	 * few repeats. It leans early and takes a later beat only within a quarter beat of {@code ideal}, so repeated
+	 * actions never run much slower than vanilla. The caller keeps it from landing before what the server accepts.
 	 */
 	public static double landing(double ideal, double duration) {
 		int grid = duration >= 3.2 ? 4 : duration >= 1.6 ? 2 : 1;
@@ -212,7 +213,7 @@ public final class BeatTracker {
 		double bestScore = Double.MAX_VALUE;
 		for (double beat = Math.ceil(ideal - reach); beat <= ideal + reach; beat++) {
 			double fromStrong = Math.abs(beat - grid * Math.round(beat / grid));
-			double score = fromStrong * 100 + Math.abs(beat - ideal) - beat * 1e-6;
+			double score = fromStrong * 100 + Math.abs(beat - ideal) + (beat > ideal ? 0.5 : 0);
 			if (score < bestScore) {
 				bestScore = score;
 				best = beat;
@@ -292,9 +293,10 @@ public final class BeatTracker {
 		check(loudness[2] < 0.01 && loudness[19] < 0.01, "quiet half should be near 0");
 		check(loudness[20] > 0.99 && loudness[39] > 0.99, "loud half should be near 1");
 
-		check(landing(5.6, 1) == 6, "a short action takes the nearest beat");
+		check(landing(5.6, 1) == 5 && landing(5.8, 1) == 6, "a short action waits at most a quarter beat");
+		check(landing(1.57, 1.57) == 1, "diamond pickaxe on stone keeps one block per beat");
 		check(landing(14.6, 1.6) == 14, "a two-beat action takes beat 1 or 3");
-		check(landing(6, 4) == 7 && landing(11, 4) == 12, "a bar-long action steps toward beat 1, later on a tie");
+		check(landing(6, 4) == 5 && landing(9, 4) == 8, "a bar-long action steps toward beat 1, earlier on a tie");
 		for (int start = 0; start < 4; start++) {
 			double last = start;
 			for (int repeat = 0; repeat < 2; repeat++) {

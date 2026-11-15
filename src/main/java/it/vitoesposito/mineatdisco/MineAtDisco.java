@@ -543,9 +543,10 @@ public final class MineAtDisco implements ClientModInitializer {
 		crackPos = miningPos;
 		boolean chained = now - lastBreakTime < 0.25;
 		crackStartBeat = chained ? lastBreakBeat : (beatRaw >= 0 ? beatRaw : audioBeat);
-		double vanillaSeconds = (Math.ceil(1.0 / step) + (chained ? 5 : 0)) / 20.0;
-		int minTicks = Math.max(1, (int) Math.ceil(0.7f / step) - 1);
-		double minBeat = Math.ceil(BeatTracker.beatAt(beats, now + minTicks / 20.0));
+		double vanillaSeconds = (breakTicks(step) + (chained ? 5 : 0)) / 20.0;
+		// Never break before vanilla would. The server takes a break once its own count reaches 70%, but client and
+		// server ticks drift apart by a tick or two, and a break that comes too early gets the block put back.
+		double minBeat = Math.ceil(BeatTracker.beatAt(beats, now + breakTicks(step) / 20.0));
 		double idealBeat = BeatTracker.beatAt(beats, now + vanillaSeconds);
 		if (minBeat < 0 || idealBeat < 0) {
 			crackPos = null;
@@ -560,7 +561,7 @@ public final class MineAtDisco implements ClientModInitializer {
 
 	/**
 	 * Paces block breaking so the crack stages follow the velocity ramp and the block breaks on {@code targetBeat}.
-	 * Waits until the server's 70% threshold is met so the server always accepts the break.
+	 * Never breaks before vanilla would, so the server always accepts the break.
 	 */
 	public static float paceMining(BlockPos pos, Direction side, float vanillaProgress, float ticks) {
 		if (!syncMining()) {
@@ -587,9 +588,9 @@ public final class MineAtDisco implements ClientModInitializer {
 		miningSide = side;
 		miningSeen = now;
 		double due = BeatTracker.timeAt(beats, targetBeat);
-		boolean serverReady = step * (ticks + 1) >= 0.7f;
+		boolean serverReady = ticks >= breakTicks(step);
 		if (now + 0.025 >= due && !serverReady) {
-			double left = (Math.ceil(0.7f / step) - 1 - ticks) / 20.0;
+			double left = (breakTicks(step) - ticks) / 20.0;
 			double nextBeat = Math.ceil(BeatTracker.beatAt(beats, now + Math.max(0.05, left)));
 			if (nextBeat < 0) {
 				crackPos = null;
@@ -605,6 +606,11 @@ public final class MineAtDisco implements ClientModInitializer {
 			return 1.0f;
 		}
 		return crackProgress();
+	}
+
+	/** Ticks vanilla takes to break a block that gains {@code step} progress per tick. */
+	private static int breakTicks(float step) {
+		return Math.max(1, (int) Math.ceil(1.0 / step - 1e-6));
 	}
 
 	public static void stopMining() {
