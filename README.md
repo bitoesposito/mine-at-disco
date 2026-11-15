@@ -5,7 +5,7 @@ A Fabric mod for Minecraft Java 26.3 that plays your own music and syncs the gam
 While a song plays:
 
 - Four brackets fly in and land on the crosshair on every beat, gold before beat 1, and four pips below count the bar.
-- The hotbar and the status bars bounce after each beat in a wave from left to right, hardest on beat 1.
+- The hotbar and the status bars bounce on the kicks the song really plays, in a wave from left to right, and rest when the drums do.
 - While you move, the view kicks a little wider on beats 1 and 3, like a burst of speed. It rests when you stand still and follows the FOV Effects slider.
 - Mobs and players dance like plushies, all in sync: a hop every two beats that lands on beats 1 and 3, a squash on each landing and a sway of the hips across the bar.
 - Trees shed leaves when a bar opens.
