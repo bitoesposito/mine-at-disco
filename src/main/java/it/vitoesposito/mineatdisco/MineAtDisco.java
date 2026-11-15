@@ -450,6 +450,28 @@ public final class MineAtDisco implements ClientModInitializer {
 	}
 
 	/**
+	 * Holds a mob's death until the next beat, a little after its hurt flash on the eighth note, and lets it pop there
+	 * with sparks and an answer on the HUD, so kills land on the beat. Only the death event pays off, not the poof.
+	 */
+	public static boolean holdDeath(LivingEntity entity, Runnable action, boolean payoff) {
+		if (!active() || entity instanceof Player) {
+			return false;
+		}
+		double due = nextLine(1);
+		deferred.add(new Deferred(() -> {
+			if (entity.level() == Minecraft.getInstance().level) {
+				action.run();
+				if (payoff) {
+					float strength = Math.max(0.4f, beatStrength(0.25));
+					flashHud(strength);
+					sparks(entity.position().add(0, entity.getBbHeight() / 2, 0), amount(16 * strength * drive()));
+				}
+			}
+		}, Double.isNaN(due) ? 0 : due));
+		return true;
+	}
+
+	/**
 	 * Checks whether {@code blocker} raised their shield right before the attack (within {@link #PARRY_TICKS} ticks).
 	 * On a perfect parry, knocks the attacker back hard and skips axe shield-disable.
 	 */
@@ -821,13 +843,18 @@ public final class MineAtDisco implements ClientModInitializer {
 			spawn(chips, center.x, center.y, center.z, Math.cos(angle) * speed, 0.1 + 0.2 * random.nextDouble(),
 					Math.sin(angle) * speed);
 		}
-		if (strength < 0.7f) {
-			return;
+		if (strength >= 0.7f) {
+			sparks(center, amount(12 * strength * drive()));
 		}
+	}
+
+	/** Dust sparks in this beat's disco color, flying out flat from {@code center}. */
+	private static void sparks(Vec3 center, int count) {
+		RandomSource random = Minecraft.getInstance().level.getRandom();
 		DustParticleOptions spark = new DustParticleOptions(discoColor(Math.round(beatRaw)), 1.3f);
-		for (int i = amount(12 * strength * drive()); i > 0; i--) {
+		for (int i = count; i > 0; i--) {
 			double angle = random.nextDouble() * 2 * Math.PI;
-			// Dust barely slows down in the air, so a slower start keeps the ring within about three blocks.
+			// Dust barely slows down in the air, so a slow start keeps the sparks within about three blocks.
 			double speed = 0.18 + 0.12 * random.nextDouble();
 			spawn(spark, center.x, center.y, center.z, Math.cos(angle) * speed, 0.05 + 0.15 * random.nextDouble(),
 					Math.sin(angle) * speed);

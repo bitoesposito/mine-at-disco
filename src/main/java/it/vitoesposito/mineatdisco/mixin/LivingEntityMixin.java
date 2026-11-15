@@ -16,9 +16,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Syncs combat feedback and shield parries to the song: hurt and death visuals wait for the next eighth note, shields
- * raise without vanilla's 5-tick delay while music plays, and raising the shield right before an attack lands a
- * perfect parry.
+ * Syncs combat feedback and shield parries to the song: hurt visuals wait for the next eighth note, deaths for the
+ * next beat, shields raise without vanilla's 5-tick delay while music plays, and raising the shield right before an
+ * attack lands a perfect parry.
  */
 @Mixin(LivingEntity.class)
 public abstract class LivingEntityMixin {
@@ -80,7 +80,7 @@ public abstract class LivingEntityMixin {
 	private void mineatdisco$holdDeath(byte id, CallbackInfo info) {
 		LivingEntity self = (LivingEntity) (Object) this;
 		if ((id == 3 || id == 60) && self.level().isClientSide()
-				&& MineAtDisco.holdCombat(self, () -> self.handleEntityEvent(id))) {
+				&& MineAtDisco.holdDeath(self, () -> self.handleEntityEvent(id), id == 3)) {
 			info.cancel();
 		}
 	}
