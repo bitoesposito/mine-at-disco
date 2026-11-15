@@ -72,8 +72,6 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static final double MINING_GRACE = 0.3;
 	/** Chips per mining hit on the first beat of the bar at full loudness. */
 	private static final int CHIPS = 20;
-	/** Length of the slow-motion and speed-up after a block breaks. */
-	private static final double RAMP_BEATS = 2;
 
 	private record Song(ShortBuffer pcm, int channels, int sampleRate, double[] beats, float[] energy) {
 	}
@@ -99,17 +97,22 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static double beatNow = -1;
 	private static int lastBeat = -1;
 	private static int lastEighth = -1;
+	private static int lastVisualEighth = -1;
 	/** Loudness of the song right now, eased: it rises fast on a drop and falls slowly into a break. */
 	private static float energyNow;
-	/** Visual beat without the ramp, where the running ramp began (NaN when none runs), and how deep it goes. */
+	/** Visual beat without the ramp. */
 	private static double beatRaw = -1;
-	private static double rampStart = Double.NaN;
-	private static float rampDepth;
 	private static float particleSpeed = 1;
-	// The block the player mines, and the audio time the game last reported a hit on it.
+	private static float lagTicks;
+	// The block the player mines, when it started on the beat grid, and the beat it will break on.
 	private static BlockPos miningPos;
 	private static Direction miningSide;
 	private static double miningSeen = Double.NEGATIVE_INFINITY;
+	private static BlockPos crackPos;
+	private static double crackStartBeat = Double.NaN;
+	private static double targetBeat = Double.NaN;
+	private static double lastBreakTime = Double.NEGATIVE_INFINITY;
+	private static double lastBreakBeat = Double.NEGATIVE_INFINITY;
 	/** How much the player moves or looks around, 0 to 1. The raw value steps per tick, the eased one per frame. */
 	private static float motionNow;
 	private static float motion;
@@ -171,6 +174,11 @@ public final class MineAtDisco implements ClientModInitializer {
 		return particleSpeed;
 	}
 
+	/** Ticks the visuals run behind real time during a ramp, 0 outside one. Entity animations subtract it. */
+	public static float lagTicks() {
+		return lagTicks;
+	}
+
 	/** How big every effect is: 0.25 in the quietest part of the song, 1.25 in the loudest. */
 	public static float drive() {
 		return 0.25f + energyNow;
@@ -227,7 +235,7 @@ public final class MineAtDisco implements ClientModInitializer {
 
 	/**
 	 * Takes over the hit effects while the player mines. The game reports hits at its own pace, so instead the mod
-	 * plays a hit and a burst of chips on every eighth note, see mine(). Returns true to skip the vanilla effect.
+	 * plays a hit and a burst of chips on every eighth note. Returns true to skip the vanilla effect.
 	 */
 	public static boolean holdMining(BlockPos pos, Direction side) {
 		if (!active()) {
@@ -237,6 +245,105 @@ public final class MineAtDisco implements ClientModInitializer {
 		miningSide = side;
 		miningSeen = played();
 		return true;
+	}
+
+	/** True while a song is playing and mining should snap to its beat. */
+	public static boolean syncMining() {
+		return source != 0 && !paused && beatRaw >= 0;
+	}
+
+	/**
+	 * Picks the beat on which the block at {@code pos} will break. When the player holds click across blocks, vanilla's
+	 * 5-tick cooldown between blocks is folded into the block's duration and snapped to the nearest beat, so fast
+	 * mining (such as Efficiency V on stone) breaks one block per beat without drifting or skipping beats.
+	 */
+	public static void startMining(BlockPos pos, Direction side) {
+		if (!syncMining()) {
+			crackPos = null;
+			return;
+		}
+		Minecraft client = Minecraft.getInstance();
+		if (client.level == null || client.player == null) {
+			return;
+		}
+		float step = client.level.getBlockState(pos).getDestroyProgress(client.player, client.level, pos);
+		if (step <= 0 || step >= 1) {
+			crackPos = null;
+			return;
+		}
+		double now = played();
+		double audioBeat = BeatTracker.beatAt(beats, now);
+		if (audioBeat < 0) {
+			crackPos = null;
+			return;
+		}
+		miningPos = pos.immutable();
+		miningSide = side;
+		miningSeen = now;
+		crackPos = miningPos;
+		boolean chained = now - lastBreakTime < 0.25;
+		crackStartBeat = chained ? lastBreakBeat : (beatRaw >= 0 ? beatRaw : audioBeat);
+		double vanillaSeconds = (Math.ceil(1.0 / step) + (chained ? 5 : 0)) / 20.0;
+		int minTicks = Math.max(1, (int) Math.ceil(0.7f / step) - 1);
+		double minBeat = Math.ceil(BeatTracker.beatAt(beats, now + minTicks / 20.0));
+		if (chained) {
+			minBeat = Math.max(minBeat, lastBreakBeat + 1);
+		}
+		double idealBeat = Math.round(BeatTracker.beatAt(beats, now + vanillaSeconds));
+		targetBeat = Math.max(minBeat, idealBeat);
+	}
+
+	/**
+	 * Paces block breaking so the crack stages follow the velocity ramp and the block breaks on {@code targetBeat}.
+	 * Waits until the server's 70% threshold is met so the server always accepts the break.
+	 */
+	public static float paceMining(BlockPos pos, Direction side, float vanillaProgress, float ticks) {
+		if (!syncMining()) {
+			crackPos = null;
+			return vanillaProgress;
+		}
+		if (!pos.equals(crackPos)) {
+			startMining(pos, side);
+		}
+		if (crackPos == null || Double.isNaN(targetBeat)) {
+			return vanillaProgress;
+		}
+		Minecraft client = Minecraft.getInstance();
+		if (client.level == null || client.player == null) {
+			return vanillaProgress;
+		}
+		float step = client.level.getBlockState(pos).getDestroyProgress(client.player, client.level, pos);
+		if (step <= 0 || step >= 1) {
+			crackPos = null;
+			return vanillaProgress;
+		}
+		double now = played();
+		miningPos = crackPos;
+		miningSide = side;
+		miningSeen = now;
+		double due = BeatTracker.timeAt(beats, targetBeat);
+		boolean serverReady = step * (ticks + 1) >= 0.7f;
+		if (now + 0.025 >= due && !serverReady) {
+			double left = (Math.ceil(0.7f / step) - 1 - ticks) / 20.0;
+			targetBeat = Math.ceil(BeatTracker.beatAt(beats, now + Math.max(0.05, left)));
+			due = BeatTracker.timeAt(beats, targetBeat);
+		}
+		if (now + 0.025 >= due && serverReady) {
+			lastBreakTime = now;
+			lastBreakBeat = targetBeat;
+			crackPos = null;
+			return 1.0f;
+		}
+		return crackProgress();
+	}
+
+	public static void stopMining() {
+		crackPos = null;
+	}
+
+	private static float crackProgress() {
+		double span = Math.max(0.1, targetBeat - crackStartBeat);
+		return Mth.clamp((float) ((beatNow - crackStartBeat) / span), 0.001f, 0.99f);
 	}
 
 	/** Moves the burst of a broken block to the next eighth note and makes it bigger. Returns true to skip vanilla. */
@@ -251,32 +358,29 @@ public final class MineAtDisco implements ClientModInitializer {
 			for (int i = 1 + Math.round(2 * energyNow); level != null && i > 0; i--) {
 				level.addDestroyBlockEffect(at, state);
 			}
-			if (Double.isNaN(rampStart) && beatRaw >= 0) {
-				rampStart = beatRaw;
-				rampDepth = 0.4f + 0.45f * energyNow;
-			}
 		}, Double.isNaN(due) ? 0 : due));
 		return true;
 	}
 
 	/**
-	 * Like a velocity edit, a broken block slows the visuals down and then speeds them up until they catch the beat
-	 * again. The music keeps its pace: only the visual beat and particle motion bend. Speed follows 1 - depth * sin,
-	 * so it starts and ends at normal speed without a jump, and the visual beat lands back on the real one.
+	 * Like a velocity edit, every beat slows the visuals down and then speeds them up so they slam into the next beat.
+	 * The music keeps its pace: only the visual beat, particles, cracks and animations bend. Speed follows
+	 * 1 - depth * sin, so it starts and ends each beat without a jump and lands right on the real beat.
+	 * ponytail: animated textures (water, lava, fire), clouds and the first-person hand still run at normal speed.
+	 * Bend their clocks by lagTicks() the same way if they stand out.
 	 */
 	private static void ramp() {
-		beatNow = beatRaw;
-		particleSpeed = 1;
-		if (Double.isNaN(rampStart)) {
+		if (beatRaw < 0) {
+			beatNow = -1;
+			particleSpeed = 1;
+			lagTicks = 0;
 			return;
 		}
-		double u = (beatRaw - rampStart) / RAMP_BEATS;
-		if (beatRaw < 0 || u < 0 || u >= 1) {
-			rampStart = Double.NaN;
-			return;
-		}
-		beatNow = rampStart + RAMP_BEATS * (u + rampDepth * (Math.cos(2 * Math.PI * u) - 1) / (2 * Math.PI));
-		particleSpeed = 1 - rampDepth * (float) Math.sin(2 * Math.PI * u);
+		double u = beatRaw % 1;
+		float depth = 0.4f + 0.45f * energyNow;
+		beatNow = beatRaw + depth * (Math.cos(2 * Math.PI * u) - 1) / (2 * Math.PI);
+		particleSpeed = 1 - depth * (float) Math.sin(2 * Math.PI * u);
+		lagTicks = (float) (20 * (BeatTracker.timeAt(beats, beatRaw) - BeatTracker.timeAt(beats, beatNow)));
 	}
 
 	/** Runs once per frame: refreshes the beat and the loudness, then runs the effects that are due. */
@@ -298,11 +402,29 @@ public final class MineAtDisco implements ClientModInitializer {
 				shedLeaves(beat % BeatTracker.PHRASE == 0 ? 2 : 1);
 			}
 		}
+		// The hit sound follows the music. The chips and cracks are visuals, so they follow the visual beat and its ramp.
+		boolean mining = now - miningSeen < MINING_GRACE;
 		int eighth = (int) Math.floor(audioBeat * 2);
 		if (eighth != lastEighth) {
 			lastEighth = eighth;
-			if (eighth >= 0 && now - miningSeen < MINING_GRACE) {
-				mine(eighth);
+			if (eighth >= 0 && mining) {
+				knock(eighth);
+			}
+		}
+		int visualEighth = (int) Math.floor(beatNow * 2);
+		if (visualEighth != lastVisualEighth) {
+			lastVisualEighth = visualEighth;
+			if (visualEighth >= 0 && mining) {
+				chip(visualEighth);
+			}
+		}
+		if (crackPos != null && beatNow >= 0) {
+			Minecraft client = Minecraft.getInstance();
+			if (client.level != null && client.player != null && client.gameMode != null
+					&& client.gameMode.isDestroying() && !client.level.getBlockState(crackPos).isAir()) {
+				client.level.destroyBlockProgress(client.player.getId(), crackPos, (int) (crackProgress() * 10));
+			} else {
+				crackPos = null;
 			}
 		}
 		if (deferred.isEmpty()) {
@@ -322,23 +444,48 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 	}
 
-	/** One mining hit on an eighth note: the block's hit sound and a burst of chips, both bigger on the beat. */
-	private static void mine(int eighth) {
-		Minecraft client = Minecraft.getInstance();
-		ClientLevel level = client.level;
+	/** How hard a mining hit on this eighth note lands: the bar's accent on the beat, light off it. */
+	private static float accent(int eighth) {
+		return eighth % 2 == 0 ? ACCENT[eighth / 2 % 4] : 0.25f;
+	}
+
+	/** The block being mined, or null when there is none. */
+	private static BlockState mined(ClientLevel level) {
 		if (level == null || miningPos == null || level.getBlockState(miningPos).isAir()) {
+			return null;
+		}
+		return level.getBlockState(miningPos);
+	}
+
+	/** The mining hit sound on an eighth note of the music, louder on the beat. */
+	private static void knock(int eighth) {
+		Minecraft client = Minecraft.getInstance();
+		BlockState state = mined(client.level);
+		if (state == null) {
 			return;
 		}
 		boolean onBeat = eighth % 2 == 0;
-		float accent = onBeat ? ACCENT[eighth / 2 % 4] : 0.25f;
-		SoundType sound = level.getBlockState(miningPos).getSoundType();
+		SoundType sound = state.getSoundType();
 		releasing = true;
 		try {
 			// Off the beat the hit sounds a little higher, so mining ticks and tocks with the song.
 			client.getSoundManager().play(new SimpleSoundInstance(sound.getHitSound(), SoundSource.BLOCKS,
-					(sound.getVolume() + 1) / 8 * (0.6f + accent) * drive(), sound.getPitch() * (onBeat ? 0.5f : 0.65f),
+					(sound.getVolume() + 1) / 8 * (0.6f + accent(eighth)) * drive(), sound.getPitch() * (onBeat ? 0.5f : 0.65f),
 					SoundInstance.createUnseededRandom(), miningPos));
-			for (int i = Math.round(CHIPS * accent * drive()); i > 0; i--) {
+		} finally {
+			releasing = false;
+		}
+	}
+
+	/** A burst of chips from the mined block on an eighth note of the visual beat, bigger on the beat. */
+	private static void chip(int eighth) {
+		ClientLevel level = Minecraft.getInstance().level;
+		if (mined(level) == null) {
+			return;
+		}
+		releasing = true;
+		try {
+			for (int i = Math.round(CHIPS * accent(eighth) * drive()); i > 0; i--) {
 				level.addBreakingBlockEffects(miningPos, miningSide, false);
 			}
 		} finally {
@@ -484,6 +631,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 		source = 0;
 		beats = new double[0];
+		crackPos = null;
 	}
 
 	private static void tick(Minecraft client) {

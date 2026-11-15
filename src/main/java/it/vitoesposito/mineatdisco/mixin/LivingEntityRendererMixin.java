@@ -40,6 +40,8 @@ public abstract class LivingEntityRendererMixin {
 			method = "extractRenderState(Lnet/minecraft/world/entity/LivingEntity;Lnet/minecraft/client/renderer/entity/state/LivingEntityRenderState;F)V",
 			at = @At("TAIL"))
 	private void mineatdisco$nod(LivingEntity entity, LivingEntityRenderState state, float partialTick, CallbackInfo info) {
+		// Legs follow the ramp like the rest of the animation, see EntityRendererMixin.
+		state.walkAnimationPos -= MineAtDisco.lagTicks() * state.walkAnimationSpeed;
 		double beat = MineAtDisco.beat();
 		if (beat >= 0) {
 			state.xRot += NOD_DEGREES * MineAtDisco.drive() * (0.5f + 0.5f * bounce(beat));

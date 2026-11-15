@@ -5,8 +5,10 @@
 	"client": [
 		"CameraMixin",
 		"ClientLevelMixin",
+		"EntityRendererMixin",
 		"FallingLeavesInvoker",
 		"LivingEntityRendererMixin",
+		"MultiPlayerGameModeMixin",
 		"ParticleMixin",
 		"SingleQuadParticleMixin",
 		"SoundEngineMixin"
