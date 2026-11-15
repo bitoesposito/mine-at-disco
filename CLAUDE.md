@@ -37,13 +37,14 @@ Tuning the owner asked for, in order:
 19. Ready cue: the brackets turn red on the beat where a full-strength swing (during a fight) or a full bow draw will be ready, so full hits land in time.
 20. Drops: `BeatTracker.drops` marks the bars where the band comes back after a quiet stretch. There a rainbow ring rolls out from the player, fireworks go up around them, the trees let go and the HUD answers.
 21. Kills land on the beat: a mob's hurt flash stays on the eighth note, its death waits for the next beat and pops with sparks and a HUD answer.
+22. Eating and throwing follow the song. While the player eats or drinks, vanilla's 4-tick chewing timer is off and the mod bites on every eighth note, harder on the beat. Throws, shots and launches play on eighth notes, a throw let go near the beat answers on the HUD, and snowball, egg and splash potion bursts land on the next eighth note with sparks.
 
 ## Code map
 
 - `BeatTracker.java` finds beats (onset envelope, tempo by autocorrelation, dynamic programming after Ellis 2007), shifts them so beat 0 opens a phrase, and measures each beat's loudness. `main` is a self-check with a synthetic click track.
 - `MineAtDisco.java` holds everything else: `/disco` (menu, `play`, `stop`, `offset`, `tap`, `x2`, `half`), the `M` and `B` keybinds and `DiscoScreen`, playback on the mod's own OpenAL source, the audio clock, the sound grid, mining, combat, breaking and placing effects, leaves, the HUD.
 - `mixin/SoundEngineMixin` holds world sounds until the next grid line and calls `frame()` once per frame.
-- `mixin/ClientLevelMixin` takes over the mining hit effect and the block break burst. `mixin/MultiPlayerGameModeMixin` paces block breaking and cracks to the beat and hooks player attacks.
+- `mixin/ClientLevelMixin` takes over the mining hit effect and the block break burst. `mixin/MultiPlayerGameModeMixin` paces block breaking and cracks to the beat and hooks player attacks. `mixin/ItemStackMixin` turns off vanilla chewing so the mod can bite on the beat. `mixin/ClientPacketListenerMixin` and `mixin/LevelEventHandlerMixin` hold thrown item and splash potion bursts for the grid.
 - `mixin/LivingEntityMixin` holds mob hurt visuals until the next eighth note and deaths until the next beat, removes the 5-tick shield delay while music plays, and handles perfect parries. `mixin/MeleeAttackGoalMixin` holds melee mob strikes until the beat after a pre-beat warning cue, and `mixin/CreeperMixin` holds creeper detonations until the beat.
 - `mixin/LivingEntityRendererMixin` is the mob and player dance and bends walk, hand-swing and death animations during a ramp. `mixin/EntityRendererMixin` bends entity animation during a ramp. `mixin/CameraMixin` is the FOV kick and `mixin/ParticleMixin` bends particle motion during a ramp. `mixin/FallingLeavesInvoker` sheds leaves.
 - User-facing text lives in `assets/mineatdisco/lang/en_us.json`. Never hardcode a string the player sees.

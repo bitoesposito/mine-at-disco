@@ -16,6 +16,7 @@ While a song plays:
 - In a fight the brackets turn red on the beat where your next full-strength swing or full bow draw will be ready.
 - When the band comes back after a break, a rainbow ring rolls out from you, fireworks go up and the trees let go.
 - Mobs flash on the eighth note when hit and fall on the next beat when killed.
+- Eating and drinking bite on every eighth note, harder on the beat. Throws and shots land on eighth notes, and snowballs, eggs and splash potions burst on the grid with sparks.
 - Other world sounds wait for the song's grid: footsteps and combat on eighth notes, the rest on the next sixteenth.
 - Every effect grows when the song is loud and calms down in quiet parts. Extra particles follow your Particles setting.
 
