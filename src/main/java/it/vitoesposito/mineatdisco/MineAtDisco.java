@@ -38,6 +38,7 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.particle.Particle;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.client.resources.sounds.SoundInstance;
@@ -46,6 +47,7 @@ import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.particles.BlockParticleOption;
+import net.minecraft.core.particles.DustParticleOptions;
 import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.network.chat.Component;
@@ -63,6 +65,7 @@ import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.openal.AL11;
@@ -86,7 +89,7 @@ public final class MineAtDisco implements ClientModInitializer {
 	/** Seconds mining counts as going on after the game last reported a hit on the block. */
 	private static final double MINING_GRACE = 0.3;
 	/** Chips per mining hit on the first beat of the bar at full loudness. */
-	private static final int CHIPS = 20;
+	private static final int CHIPS = 10;
 	/** Distance in beats from the nearest beat within which a player attack counts as on-beat. */
 	private static final double BEAT_WINDOW = 0.22;
 	/** Ticks after raising a shield during which blocking an attack counts as a perfect parry. */
@@ -125,7 +128,6 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static float energyNow;
 	/** Visual beat without the ramp. */
 	private static double beatRaw = -1;
-	private static float particleSpeed = 1;
 	private static float lagTicks;
 	// The block the player mines, when it started on the beat grid, and the beat it will break on.
 	private static BlockPos miningPos;
@@ -217,11 +219,6 @@ public final class MineAtDisco implements ClientModInitializer {
 	/** 0 while the player stands still with a steady view, 1 while walking or looking around. Eased over time. */
 	public static float motion() {
 		return motion;
-	}
-
-	/** How fast particles move: 1 normally, below 1 in slow motion, above 1 while catching up. */
-	public static float particleSpeed() {
-		return particleSpeed;
 	}
 
 	/** Visual beat without the ramp. The camera and impact effects use it, since bending them reads as lag. */
@@ -578,31 +575,29 @@ public final class MineAtDisco implements ClientModInitializer {
 		double due = nextLine(2);
 		deferred.add(new Deferred(() -> {
 			ClientLevel level = Minecraft.getInstance().level;
-			for (int i = 1 + Math.round(2 * energyNow); level != null && i > 0; i--) {
+			if (level != null) {
 				level.addDestroyBlockEffect(at, state);
+				pop(at, state);
 			}
 		}, Double.isNaN(due) ? 0 : due));
 		return true;
 	}
 
 	/**
-	 * Like a velocity edit, every beat slows the visuals down and then speeds them up so they slam into the next beat.
-	 * The music keeps its pace: only the visual beat, particles, cracks and animations bend. Speed follows
+	 * Like a velocity edit, every beat slows the animations down and then speeds them up so they slam into the next
+	 * beat. The music keeps its pace: only the visual beat, cracks, HUD and entity animations bend. Speed follows
 	 * 1 - depth * sin, so it starts and ends each beat without a jump and lands right on the real beat.
-	 * ponytail: animated textures (water, lava, fire) and clouds still run at normal speed.
-	 * Bend their clocks by lagTicks() the same way if they stand out.
+	 * The camera and particle motion stay out of it: bent every beat, they read as the game losing speed.
 	 */
 	private static void ramp() {
 		if (beatRaw < 0) {
 			beatNow = -1;
-			particleSpeed = 1;
 			lagTicks = 0;
 			return;
 		}
 		double u = beatRaw % 1;
 		float depth = 0.4f + 0.45f * energyNow;
 		beatNow = beatRaw + depth * (Math.cos(2 * Math.PI * u) - 1) / (2 * Math.PI);
-		particleSpeed = 1 - depth * (float) Math.sin(2 * Math.PI * u);
 		lagTicks = (float) (20 * (BeatTracker.timeAt(beats, beatRaw) - BeatTracker.timeAt(beats, beatNow)));
 	}
 
@@ -627,7 +622,7 @@ public final class MineAtDisco implements ClientModInitializer {
 				shedLeaves(beat % BeatTracker.PHRASE == 0 ? 2 : 1);
 			}
 		}
-		// The hit sound follows the music. The chips and cracks are visuals, so they follow the visual beat and its ramp.
+		// The hit sound follows the music and the chips land with it, on the steady visual beat. Cracks follow the ramp.
 		boolean mining = now - miningSeen < MINING_GRACE;
 		int eighth = (int) Math.floor(audioBeat * 2);
 		if (eighth != lastEighth) {
@@ -636,7 +631,7 @@ public final class MineAtDisco implements ClientModInitializer {
 				knock(eighth);
 			}
 		}
-		int visualEighth = (int) Math.floor(beatNow * 2);
+		int visualEighth = (int) Math.floor(beatRaw * 2);
 		if (visualEighth != lastVisualEighth) {
 			lastVisualEighth = visualEighth;
 			if (visualEighth >= 0 && mining) {
@@ -702,23 +697,77 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 	}
 
-	/** A burst of chips from the mined block on an eighth note of the visual beat, bigger on the beat. */
-	private static void chip(int eighth) {
-		ClientLevel level = Minecraft.getInstance().level;
-		if (mined(level) == null) {
-			return;
-		}
-		releasing = true;
-		try {
-			for (int i = Math.round(CHIPS * accent(eighth) * drive()); i > 0; i--) {
-				level.addBreakingBlockEffects(miningPos, miningSide, false);
-			}
-		} finally {
-			releasing = false;
+	/** Scales a count of extra particles by the player's Particles setting: none on Minimal. */
+	private static int amount(float count) {
+		return switch (Minecraft.getInstance().options.particles().get()) {
+			case ALL -> Math.round(count);
+			case DECREASED -> Math.round(count / 2);
+			case MINIMAL -> 0;
+		};
+	}
+
+	/** Adds a particle with an exact velocity. Vanilla's own spawn randomizes the speed, which leaves chips limp. */
+	private static void spawn(ParticleOptions type, double x, double y, double z, double vx, double vy, double vz) {
+		Particle particle = Minecraft.getInstance().particleEngine.createParticle(type, x, y, z, 0, 0, 0);
+		if (particle != null) {
+			particle.setParticleSpeed(vx, vy, vz);
 		}
 	}
 
-	/** A puff of chips from a block the player just placed, bigger when the song is loud. */
+	/** A spray of chips off the mined face on an eighth note, flying back toward the player and bigger on the beat. */
+	private static void chip(int eighth) {
+		Minecraft client = Minecraft.getInstance();
+		BlockState state = mined(client.level);
+		if (state == null || miningSide == null) {
+			return;
+		}
+		double nx = miningSide.getStepX();
+		double ny = miningSide.getStepY();
+		double nz = miningSide.getStepZ();
+		Vec3 hit = client.hitResult instanceof BlockHitResult block && block.getBlockPos().equals(miningPos)
+				? block.getLocation()
+				: Vec3.atCenterOf(miningPos).add(nx / 2, ny / 2, nz / 2);
+		BlockParticleOption chips = new BlockParticleOption(ParticleTypes.BLOCK, state);
+		RandomSource random = client.level.getRandom();
+		float accent = accent(eighth);
+		for (int i = amount(CHIPS * accent * drive()); i > 0; i--) {
+			double speed = 0.08 + 0.14 * accent * random.nextDouble();
+			// Start just off the face: a chip spawned on the surface collides with the block and never moves.
+			spawn(chips, hit.x + nx * 0.05, hit.y + ny * 0.05, hit.z + nz * 0.05,
+					nx * speed + (random.nextDouble() - 0.5) * 0.12,
+					ny * speed + random.nextDouble() * 0.12,
+					nz * speed + (random.nextDouble() - 0.5) * 0.12);
+		}
+	}
+
+	/** Blows a broken block apart: a ring of chips flying out, plus colored sparks when it breaks on beat 1 or 3. */
+	private static void pop(BlockPos pos, BlockState state) {
+		ClientLevel level = Minecraft.getInstance().level;
+		RandomSource random = level.getRandom();
+		Vec3 center = Vec3.atCenterOf(pos);
+		BlockParticleOption chips = new BlockParticleOption(ParticleTypes.BLOCK, state);
+		for (int i = amount(16 * drive()); i > 0; i--) {
+			double angle = random.nextDouble() * 2 * Math.PI;
+			double speed = 0.15 + 0.15 * random.nextDouble();
+			spawn(chips, center.x, center.y, center.z, Math.cos(angle) * speed, 0.1 + 0.2 * random.nextDouble(),
+					Math.sin(angle) * speed);
+		}
+		long beat = Math.round(beatRaw);
+		if (beatRaw < 0 || beat % 2 != 0 || Math.abs(beatRaw - beat) > 0.25) {
+			return;
+		}
+		// The color walks around the hue wheel once per phrase, so each downbeat break gets the next disco light.
+		DustParticleOptions spark = new DustParticleOptions(Mth.hsvToRgb((float) beat / BeatTracker.PHRASE % 1, 0.7f, 1), 1.3f);
+		for (int i = amount(12 * drive()); i > 0; i--) {
+			double angle = random.nextDouble() * 2 * Math.PI;
+			// Dust barely slows down in the air, so a slower start keeps the ring within about three blocks.
+			double speed = 0.18 + 0.12 * random.nextDouble();
+			spawn(spark, center.x, center.y, center.z, Math.cos(angle) * speed, 0.05 + 0.15 * random.nextDouble(),
+					Math.sin(angle) * speed);
+		}
+	}
+
+	/** Dust kicked out along the ground from a block the player just placed, more when the song is loud. */
 	private static void puff(double x, double y, double z) {
 		ClientLevel level = Minecraft.getInstance().level;
 		if (level == null) {
@@ -730,11 +779,14 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 		BlockParticleOption chips = new BlockParticleOption(ParticleTypes.BLOCK, state);
 		RandomSource random = level.getRandom();
-		for (int i = Math.round(CHIPS * drive()); i > 0; i--) {
-			double dx = random.nextDouble() - 0.5;
-			double dy = random.nextDouble() - 0.5;
-			double dz = random.nextDouble() - 0.5;
-			level.addParticle(chips, x + dx, y + dy, z + dz, dx * 0.6, dy * 0.6 + 0.2, dz * 0.6);
+		for (int i = amount(CHIPS * drive()); i > 0; i--) {
+			// A point just outside one of the block's bottom edges. Inside the block the chip would be stuck.
+			double along = random.nextDouble() - 0.5;
+			double out = random.nextBoolean() ? 0.52 : -0.52;
+			boolean onX = random.nextBoolean();
+			double dx = onX ? out : along;
+			double dz = onX ? along : out;
+			spawn(chips, x + dx, y - 0.45, z + dz, dx * 0.25, 0.04 + 0.06 * random.nextDouble(), dz * 0.25);
 		}
 	}
 
@@ -746,7 +798,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 		RandomSource random = client.level.getRandom();
 		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-		for (int i = 0; i < 300 * strength * drive(); i++) {
+		for (int i = 0; i < 120 * strength * drive(); i++) {
 			pos.setWithOffset(client.player.blockPosition(),
 					random.nextInt(25) - 12, random.nextInt(17) - 4, random.nextInt(25) - 12);
 			if (client.level.getBlockState(pos).getBlock() instanceof FallingLeavesInvoker leaves
