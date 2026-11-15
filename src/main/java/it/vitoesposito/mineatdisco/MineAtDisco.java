@@ -129,6 +129,12 @@ public final class MineAtDisco implements ClientModInitializer {
 	/** Visual beat without the ramp. */
 	private static double beatRaw = -1;
 	private static float lagTicks;
+	/**
+	 * Whether this game runs the world itself, and whether it runs it alone (not open to LAN). Timing changes need the
+	 * first, changes to mobs the second. On a server the mod only moves visuals and sounds, which anticheats ignore.
+	 */
+	private static volatile boolean localWorld;
+	private static volatile boolean soloWorld;
 	// The block the player mines, when it started on the beat grid, and the beat it will break on.
 	private static BlockPos miningPos;
 	private static Direction miningSide;
@@ -301,15 +307,20 @@ public final class MineAtDisco implements ClientModInitializer {
 		return true;
 	}
 
-	/** True while a song is playing and mining or combat should snap to its beat. */
+	/** True while a song plays in a world this game runs, so mining and shields may snap to the beat. */
 	public static boolean syncMining() {
-		return audioBeatNow >= 0;
+		return audioBeatNow >= 0 && localWorld;
 	}
 
-	/** True when no song plays or the audio clock is inside the beat window where mobs strike and creepers detonate. */
+	/** True while a song plays in a world this game runs alone, so mobs may wait for the beat. */
+	private static boolean syncMobs() {
+		return audioBeatNow >= 0 && soloWorld;
+	}
+
+	/** True when mobs need not wait, or the audio clock is inside the beat window where they strike and detonate. */
 	public static boolean onBeatWindow() {
 		double beat = audioBeatNow;
-		if (beat < 0) {
+		if (!syncMobs()) {
 			return true;
 		}
 		double phase = beat % 1;
@@ -322,7 +333,7 @@ public final class MineAtDisco implements ClientModInitializer {
 	 */
 	public static boolean canMobAttack(Mob mob) {
 		double beat = audioBeatNow;
-		if (beat < 0) {
+		if (!syncMobs()) {
 			return true;
 		}
 		double phase = beat % 1;
@@ -401,7 +412,7 @@ public final class MineAtDisco implements ClientModInitializer {
 	 * On a perfect parry, knocks the attacker back hard and skips axe shield-disable.
 	 */
 	public static boolean tryParry(LivingEntity blocker, LivingEntity attacker, DamageSource source, float amount) {
-		if (audioBeatNow < 0 || blocker.getTicksUsingItem() > PARRY_TICKS) {
+		if (!syncMobs() || blocker.getTicksUsingItem() > PARRY_TICKS) {
 			return false;
 		}
 		attacker.knockback(1.4, blocker.getX() - attacker.getX(), blocker.getZ() - attacker.getZ(), source, amount);
@@ -412,7 +423,7 @@ public final class MineAtDisco implements ClientModInitializer {
 
 	/** Triggers the parry clang and spark burst when a newly raised shield blocks a projectile. */
 	public static void tryParryProjectile(LivingEntity blocker, Entity projectile) {
-		if (audioBeatNow >= 0 && blocker.getTicksUsingItem() <= PARRY_TICKS) {
+		if (syncMobs() && blocker.getTicksUsingItem() <= PARRY_TICKS) {
 			int id = projectile != null ? projectile.getId() : blocker.getId();
 			Minecraft.getInstance().execute(() -> parryBurst(id));
 		}
@@ -1008,6 +1019,9 @@ public final class MineAtDisco implements ClientModInitializer {
 	}
 
 	private static void tick(Minecraft client) {
+		var server = client.getSingleplayerServer();
+		localWorld = server != null;
+		soloWorld = server != null && !server.isPublished();
 		while (menuKey != null && menuKey.consumeClick()) {
 			openMenu = true;
 		}
