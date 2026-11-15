@@ -199,6 +199,28 @@ public final class BeatTracker {
 		return beats[i] + (beat - i) * (beats[i + 1] - beats[i]);
 	}
 
+	/**
+	 * Picks the beat an action that takes {@code duration} beats should land on, close to {@code ideal}. Repeated
+	 * actions drift toward strong beats: one that takes about a bar lands on beat 1, one that takes about two beats on
+	 * beats 1 and 3. Each landing moves at most 30% of the duration, so a chain settles onto the strong beat over a
+	 * few repeats. Ties go to the later beat, which never asks the server for a break it would refuse.
+	 */
+	public static double landing(double ideal, double duration) {
+		int grid = duration >= 3.2 ? 4 : duration >= 1.6 ? 2 : 1;
+		double reach = Math.max(0.75, duration * 0.3);
+		double best = Math.round(ideal);
+		double bestScore = Double.MAX_VALUE;
+		for (double beat = Math.ceil(ideal - reach); beat <= ideal + reach; beat++) {
+			double fromStrong = Math.abs(beat - grid * Math.round(beat / grid));
+			double score = fromStrong * 100 + Math.abs(beat - ideal) - beat * 1e-6;
+			if (score < bestScore) {
+				bestScore = score;
+				best = beat;
+			}
+		}
+		return best;
+	}
+
 	public static double bpm(double[] beats) {
 		return beats.length < 2 ? 0 : 60 * (beats.length - 1) / (beats[beats.length - 1] - beats[0]);
 	}
@@ -269,6 +291,17 @@ public final class BeatTracker {
 		float[] loudness = energy(ShortBuffer.wrap(wave), 1, rate, grid);
 		check(loudness[2] < 0.01 && loudness[19] < 0.01, "quiet half should be near 0");
 		check(loudness[20] > 0.99 && loudness[39] > 0.99, "loud half should be near 1");
+
+		check(landing(5.6, 1) == 6, "a short action takes the nearest beat");
+		check(landing(14.6, 1.6) == 14, "a two-beat action takes beat 1 or 3");
+		check(landing(6, 4) == 7 && landing(11, 4) == 12, "a bar-long action steps toward beat 1, later on a tie");
+		for (int start = 0; start < 4; start++) {
+			double last = start;
+			for (int repeat = 0; repeat < 2; repeat++) {
+				last = landing(last + 4, 4);
+			}
+			check(last % 4 == 0, "a chain of bar-long actions from beat " + start + " ends on " + last);
+		}
 		System.out.println("ok: " + beats.length + " beats at " + bpm(beats) + " BPM");
 	}
 

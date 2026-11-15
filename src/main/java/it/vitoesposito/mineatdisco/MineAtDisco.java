@@ -462,8 +462,9 @@ public final class MineAtDisco implements ClientModInitializer {
 
 	/**
 	 * Picks the beat on which the block at {@code pos} will break. When the player holds click across blocks, vanilla's
-	 * 5-tick cooldown between blocks is folded into the block's duration and snapped to the nearest beat, so fast
-	 * mining (such as Efficiency V on stone) breaks one block per beat without drifting or skipping beats.
+	 * 5-tick cooldown between blocks is folded into the block's duration, so fast mining (such as Efficiency V on stone)
+	 * breaks one block per beat without drifting or skipping beats. Slower blocks drift toward strong beats, see
+	 * BeatTracker.landing, so a chain of bar-long blocks settles onto beat 1.
 	 */
 	public static void startMining(BlockPos pos, Direction side) {
 		if (!syncMining()) {
@@ -494,7 +495,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		double vanillaSeconds = (Math.ceil(1.0 / step) + (chained ? 5 : 0)) / 20.0;
 		int minTicks = Math.max(1, (int) Math.ceil(0.7f / step) - 1);
 		double minBeat = Math.ceil(BeatTracker.beatAt(beats, now + minTicks / 20.0));
-		double idealBeat = Math.round(BeatTracker.beatAt(beats, now + vanillaSeconds));
+		double idealBeat = BeatTracker.beatAt(beats, now + vanillaSeconds);
 		if (minBeat < 0 || idealBeat < 0) {
 			crackPos = null;
 			targetBeat = Double.NaN;
@@ -503,7 +504,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		if (chained) {
 			minBeat = Math.max(minBeat, lastBreakBeat + 1);
 		}
-		targetBeat = Math.max(minBeat, idealBeat);
+		targetBeat = Math.max(minBeat, BeatTracker.landing(idealBeat, idealBeat - audioBeat));
 	}
 
 	/**
