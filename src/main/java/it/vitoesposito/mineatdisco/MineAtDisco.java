@@ -94,6 +94,11 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static final int TAPS_KEPT = 16;
 	/** Deliberate clicks near the beat the suggested offset waits for, like lazer's suggestion from hit errors. */
 	private static final int CLICKS_FOR_SUGGESTION = 16;
+	/**
+	 * A beat sound noticed this late, after a slow frame, is skipped instead of played off the beat, like the mistimed
+	 * allowance of lazer's beat-synced containers. Two 60 fps frames.
+	 */
+	private static final double MISTIMED = 2.0 / 60;
 	/** Longest frame time used to draw a frame ahead, see visualTime. */
 	private static final double MAX_FRAME_LEAD = 0.025;
 	/** A sound this soon after a grid line, as a share of a grid step, plays at once. */
@@ -806,10 +811,11 @@ public final class MineAtDisco implements ClientModInitializer {
 		int eighth = (int) Math.floor(audioBeat * 2);
 		if (eighth != lastEighth) {
 			lastEighth = eighth;
-			if (eighth >= 0 && mining) {
+			boolean onTime = eighth >= 0 && now - BeatTracker.timeAt(beats, eighth / 2.0) <= MISTIMED;
+			if (onTime && mining) {
 				knock(eighth);
 			}
-			if (eighth >= 0) {
+			if (onTime) {
 				chew(eighth);
 			}
 		}
