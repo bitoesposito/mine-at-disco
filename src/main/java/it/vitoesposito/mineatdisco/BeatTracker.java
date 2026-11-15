@@ -16,9 +16,9 @@ public final class BeatTracker {
 	/** Readings per second in a punch curve, see punch. */
 	public static final int PUNCH_RATE = 100;
 	/** How fast a punch falls back, per second. lazer's logo visualiser uses 2.4; bounces want to settle within a beat. */
-	private static final float PUNCH_DECAY = 6;
+	static final float PUNCH_DECAY = 6;
 	private static final int FPS = 200;
-	private static final double BASS_HZ = 150;
+	static final double BASS_HZ = 150;
 	/** How strongly the tracker holds the tempo against a louder onset nearby. */
 	private static final double TIGHTNESS = 400;
 
