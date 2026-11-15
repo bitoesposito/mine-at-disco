@@ -13,6 +13,10 @@ import java.util.Arrays;
  */
 public final class BeatTracker {
 	public static final int PHRASE = 8;
+	/** Readings per second in a punch curve, see punch. */
+	public static final int PUNCH_RATE = 100;
+	/** How fast a punch falls back, per second. lazer's logo visualiser uses 2.4; bounces want to settle within a beat. */
+	private static final float PUNCH_DECAY = 6;
 	private static final int FPS = 200;
 	private static final double BASS_HZ = 150;
 	/** How strongly the tracker holds the tempo against a louder onset nearby. */
@@ -179,6 +183,62 @@ public final class BeatTracker {
 	}
 
 	/**
+	 * How hard the low end hits, {@link #PUNCH_RATE} times a second, from 0 to 1, with a 20 ms rise and the fall of
+	 * lazer's logo visualiser (v -= dt * decay * (v + 0.03)). It measures how fast the bass level climbs over 30 ms,
+	 * not the level itself: a sustained bass line, which in merengue sits on the off-beats, barely registers, while a
+	 * kick does. Linear levels keep a quiet break quiet. The whole song is known in advance, so the HUD can read the
+	 * curve at exactly the moment the player hears, with no analysis delay.
+	 */
+	public static float[] punch(ShortBuffer pcm, int channels, int sampleRate) {
+		int hop = sampleRate / PUNCH_RATE;
+		int frames = pcm.remaining() / channels / hop;
+		float[] level = new float[frames];
+		double smoothing = 1 - Math.exp(-2 * Math.PI * BASS_HZ / sampleRate);
+		double low1 = 0;
+		double low2 = 0;
+		for (int f = 0; f < frames; f++) {
+			double sum = 0;
+			for (int i = f * hop * channels, end = i + hop * channels; i < end; i += channels) {
+				int sample = 0;
+				for (int c = 0; c < channels; c++) {
+					sample += pcm.get(pcm.position() + i + c);
+				}
+				low1 += smoothing * (sample - low1);
+				low2 += smoothing * (low1 - low2);
+				sum += Math.abs(low2);
+			}
+			level[f] = (float) (sum / hop);
+		}
+		float[] attack = new float[frames];
+		for (int f = 3; f < frames; f++) {
+			attack[f] = Math.max(0, level[f] - level[f - 3]);
+		}
+		float[] sorted = attack.clone();
+		Arrays.sort(sorted);
+		float loud = frames == 0 ? 0 : sorted[frames * 49 / 50];
+		float[] punch = new float[frames];
+		float value = 0;
+		float dt = 1f / PUNCH_RATE;
+		float rise = 1 - (float) Math.exp(-dt / 0.02);
+		for (int f = 0; f < frames; f++) {
+			float target = loud > 0 ? Math.min(1, attack[f] / loud) : 0;
+			value = target > value ? value + (target - value) * rise : Math.max(target, value - dt * PUNCH_DECAY * (value + 0.03f));
+			punch[f] = value;
+		}
+		return punch;
+	}
+
+	/** Reads a punch curve at {@code seconds}, between two readings by straight line, 0 outside it. */
+	public static float punchAt(float[] punch, double seconds) {
+		double at = seconds * PUNCH_RATE;
+		int i = (int) Math.floor(at);
+		if (i < 0 || i + 1 >= punch.length) {
+			return 0;
+		}
+		return (float) (punch[i] + (at - i) * (punch[i + 1] - punch[i]));
+	}
+
+	/**
 	 * Marks the bars where the band comes back after a quiet stretch: the first beat of a bar whose next four beats are
 	 * loud after eight quiet ones. Two drops sit at least four bars apart.
 	 */
@@ -316,6 +376,20 @@ public final class BeatTracker {
 		float[] loudness = energy(ShortBuffer.wrap(wave), 1, rate, grid);
 		check(loudness[2] < 0.01 && loudness[19] < 0.01, "quiet half should be near 0");
 		check(loudness[20] > 0.99 && loudness[39] > 0.99, "loud half should be near 1");
+
+		// A 60 Hz kick of 50 ms every half second: the punch peaks on each kick and falls before the next.
+		short[] kicks = new short[rate * 4];
+		for (int i = 0; i < kicks.length; i++) {
+			double t = (double) i / rate;
+			kicks[i] = (short) (t % 0.5 < 0.05 ? 20000 * Math.sin(2 * Math.PI * 60 * t) : 0);
+		}
+		float[] punch = punch(ShortBuffer.wrap(kicks), 1, rate);
+		float peak = 0;
+		for (double t = 2; t < 2.1; t += 0.005) {
+			peak = Math.max(peak, punchAt(punch, t));
+		}
+		check(peak > 0.6, "punch peak on a kick was " + peak);
+		check(punchAt(punch, 2.4) < 0.2, "punch before the next kick was " + punchAt(punch, 2.4));
 
 		// Loud, a break, the band back at beat 40, a short dip and back again at 52, too soon for a second drop.
 		float[] song = new float[64];

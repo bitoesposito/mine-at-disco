@@ -100,8 +100,8 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static final double ON_GRID = 0.2;
 	/** How hard each beat of the bar hits. The first beat leads, the third answers. */
 	private static final float[] ACCENT = {1, 0.4f, 0.7f, 0.4f};
-	/** GUI pixels the hotbar and status bars rise on beat 1 at full loudness. */
-	private static final float HUD_HOP = 3;
+	/** GUI pixels the hotbar and status bars rise on the hardest kick of the song. */
+	private static final float HUD_HOP = 4;
 	/** Share of a beat the landing ring takes to open and fade. */
 	private static final float RING = 0.35f;
 	/** Beats the sparks answering an on-beat action take to fly out and fade. */
@@ -123,7 +123,7 @@ public final class MineAtDisco implements ClientModInitializer {
 	/** Ticks after raising a shield during which blocking an attack counts as a perfect parry. */
 	private static final int PARRY_TICKS = 7;
 
-	private record Song(ShortBuffer pcm, int channels, int sampleRate, double[] beats, float[] energy) {
+	private record Song(ShortBuffer pcm, int channels, int sampleRate, double[] beats, float[] energy, float[] punch) {
 	}
 
 	private record Deferred(Runnable action, double due) {
@@ -138,6 +138,10 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static float[] energy = {};
 	/** Beats where the band comes back after a quiet stretch, see BeatTracker.drops. */
 	private static boolean[] drops = {};
+	/** How hard the low end hits over the song, see BeatTracker.punch. */
+	private static float[] punch = {};
+	/** Visual time in seconds with the ramp applied, so the HUD bounce lingers and whips with everything else. */
+	private static double rampedSeconds;
 	private static boolean paused;
 	/** Smoothed mixer position, the system time it was read at, and the clock that smooths it. See played(). */
 	private static final AudioClock clock = new AudioClock();
@@ -222,11 +226,11 @@ public final class MineAtDisco implements ClientModInitializer {
 		ClientTickEvents.END_CLIENT_TICK.register(MineAtDisco::tick);
 		HudElementRegistry.attachElementAfter(VanillaHudElements.CROSSHAIR,
 				Identifier.fromNamespaceAndPath("mineatdisco", "beat"), MineAtDisco::drawBeat);
-		// After each beat the hotbar and the status bars bounce in a wave from left to right, delayed in beats.
+		// The hotbar and the status bars bounce on the song's kicks in a wave from left to right, delayed in seconds.
 		Map.of(VanillaHudElements.HEALTH_BAR, 0.0, VanillaHudElements.ARMOR_BAR, 0.0,
-				VanillaHudElements.HOTBAR, 0.05, VanillaHudElements.EXPERIENCE_LEVEL, 0.05,
-				VanillaHudElements.INFO_BAR, 0.05, VanillaHudElements.INFO_BAR_FOREGROUND, 0.05,
-				VanillaHudElements.FOOD_BAR, 0.1, VanillaHudElements.AIR_BAR, 0.1, VanillaHudElements.MOUNT_HEALTH, 0.1)
+				VanillaHudElements.HOTBAR, 0.03, VanillaHudElements.EXPERIENCE_LEVEL, 0.03,
+				VanillaHudElements.INFO_BAR, 0.03, VanillaHudElements.INFO_BAR_FOREGROUND, 0.03,
+				VanillaHudElements.FOOD_BAR, 0.06, VanillaHudElements.AIR_BAR, 0.06, VanillaHudElements.MOUNT_HEALTH, 0.06)
 				.forEach((element, delay) -> HudElementRegistry.replaceElement(element, original -> (gui, delta) -> {
 					gui.pose().pushMatrix();
 					gui.pose().translate(0, -hop(delay));
@@ -292,14 +296,20 @@ public final class MineAtDisco implements ClientModInitializer {
 		return 0.25f + energyNow;
 	}
 
-	/** HUD bounce: a smooth hump over the first half of each beat, sized by the bar accent and the loudness. */
+	/**
+	 * HUD bounce in GUI pixels: the song's bass punch {@code delay} seconds back on the ramped visual time. It follows
+	 * the kicks the song really plays, fills and breaks included, instead of a fixed accent per beat.
+	 */
 	private static float hop(double delay) {
-		double beat = beatNow - delay;
-		if (beatNow < 0 || beat < 0) {
-			return 0;
-		}
-		double u = beat % 1;
-		return u >= 0.5 ? 0 : HUD_HOP * ACCENT[(int) beat % 4] * drive() * (float) Math.sin(2 * Math.PI * u);
+		return beatNow < 0 ? 0 : HUD_HOP * BeatTracker.punchAt(punch, rampedSeconds - delay);
+	}
+
+	/**
+	 * Bass punch of the beat that opens the current two-beat cycle, a little after the beat where the kick peaks. The
+	 * camera kick scales by it, held for the whole cycle, so the view never jitters with the waveform.
+	 */
+	public static float cyclePunch() {
+		return beatRaw < 0 ? 0 : BeatTracker.punchAt(punch, BeatTracker.timeAt(beats, 2 * Math.round(beatRaw / 2)) + 0.03);
 	}
 
 	/** This phrase's disco light: the hue walks around the wheel once per phrase, one step per beat. */
@@ -777,6 +787,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		audioBeatNow = audioBeat;
 		beatRaw = source == 0 ? -1 : BeatTracker.beatAt(beats, visualTime(now));
 		ramp();
+		rampedSeconds = beatNow < 0 ? 0 : BeatTracker.timeAt(beats, beatNow);
 		motion += (motionNow - motion) * (1 - (float) Math.exp(-elapsed / 0.3f));
 		float loudness = beatNow < 0 || energy.length == 0 ? 0 : energy[Mth.clamp((int) beatNow, 0, energy.length - 1)];
 		energyNow += (loudness - energyNow) * (1 - (float) Math.exp(-elapsed / (loudness > energyNow ? 0.08f : 0.5f)));
@@ -1231,7 +1242,8 @@ public final class MineAtDisco implements ClientModInitializer {
 				return null;
 			}
 			double[] beats = BeatTracker.track(pcm, channels.get(0), rate.get(0));
-			return new Song(pcm, channels.get(0), rate.get(0), beats, BeatTracker.energy(pcm, channels.get(0), rate.get(0), beats));
+			return new Song(pcm, channels.get(0), rate.get(0), beats, BeatTracker.energy(pcm, channels.get(0), rate.get(0), beats),
+					BeatTracker.punch(pcm, channels.get(0), rate.get(0)));
 		} catch (IOException e) {
 			throw new UncheckedIOException(e);
 		} finally {
@@ -1253,6 +1265,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		beats = song.beats();
 		energy = song.energy();
 		drops = BeatTracker.drops(energy);
+		punch = song.punch();
 		paused = false;
 		clock.reset();
 		playedAt = 0;
@@ -1281,6 +1294,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		currentSong = "";
 		beats = new double[0];
 		drops = new boolean[0];
+		punch = new float[0];
 		audioBeatNow = -1;
 		telegraphedMobs.clear();
 		crackPos = null;
@@ -1393,7 +1407,9 @@ public final class MineAtDisco implements ClientModInitializer {
 			int size = Math.round(5 + 10 * k * (bar == 0 ? 1.5f : 1));
 			gui.pose().pushMatrix();
 			gui.pose().translate(cx, cy);
-			gui.outline(-size, -size, 2 * size, 2 * size, argb((1 - k) * presence * (bar == 0 ? 1 : 0.5f), bar == 0 ? GOLD : WHITE));
+			// The ring answers the kick that lands with the beat: bright on a hard hit, faint where the drums rest.
+			float hit = 0.35f + 0.65f * BeatTracker.punchAt(punch, rampedSeconds);
+			gui.outline(-size, -size, 2 * size, 2 * size, argb((1 - k) * presence * hit * (bar == 0 ? 1 : 0.5f), bar == 0 ? GOLD : WHITE));
 			gui.pose().popMatrix();
 		}
 

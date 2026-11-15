@@ -31,6 +31,8 @@ public abstract class CameraMixin {
 				: 0.5 + 0.5 * Math.cos(Math.PI * u / (1 - RISE));
 		// Follow the FOV Effects slider in the accessibility options, like vanilla's sprint zoom.
 		float scale = Minecraft.getInstance().options.fovEffectScale().get().floatValue();
-		return fov * (1 + KICK * scale * MineAtDisco.motion() * MineAtDisco.drive() * (float) kick);
+		// Sized by the kick that opens the cycle, so a hard hit pushes harder and a beat without drums barely moves.
+		float hit = 0.5f + 0.5f * MineAtDisco.cyclePunch();
+		return fov * (1 + KICK * scale * MineAtDisco.motion() * MineAtDisco.drive() * hit * (float) kick);
 	}
 }
