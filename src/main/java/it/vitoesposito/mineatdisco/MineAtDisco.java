@@ -21,6 +21,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 import net.fabricmc.api.ClientModInitializer;
@@ -72,8 +75,11 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 import org.lwjgl.openal.AL;
+import org.lwjgl.openal.ALC;
+import org.lwjgl.openal.ALC10;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.openal.AL11;
+import org.lwjgl.openal.SOFTDeviceClock;
 import org.lwjgl.openal.SOFTSourceLatency;
 import org.lwjgl.stb.STBVorbis;
 import org.lwjgl.system.MemoryStack;
@@ -148,6 +154,13 @@ public final class MineAtDisco implements ClientModInitializer {
 	/** Visual time in seconds with the ramp applied, so the HUD bounce lingers and whips with everything else. */
 	private static double rampedSeconds;
 	private static boolean paused;
+	// Live mode follows what the system plays (Spotify, a browser, any player) instead of a local song.
+	private static LoopbackCapture capture;
+	private static LivePunch livePunch = new LivePunch();
+	private static volatile LiveBeat.Snapshot liveSnapshot = LiveBeat.Snapshot.EMPTY;
+	private static ScheduledExecutorService liveUpdates;
+	/** nanoTime in seconds when live mode started. Live song time counts from here. */
+	private static double liveEpoch;
 	/** Smoothed mixer position, the system time it was read at, and the clock that smooths it. See played(). */
 	private static final AudioClock clock = new AudioClock();
 	private static double playedAt;
@@ -250,6 +263,10 @@ public final class MineAtDisco implements ClientModInitializer {
 				.then(literal("play").then(argument("song", StringArgumentType.greedyString())
 						.suggests((command, builder) -> SharedSuggestionProvider.suggest(songs(), builder))
 						.executes(command -> play(command.getSource(), StringArgumentType.getString(command, "song")))))
+				.then(literal("live").executes(command -> {
+					startLive(command.getSource().getClient());
+					return 1;
+				}))
 				.then(literal("stop").executes(command -> {
 					stop();
 					command.getSource().sendFeedback(Component.translatable("mineatdisco.stopped"));
@@ -306,7 +323,7 @@ public final class MineAtDisco implements ClientModInitializer {
 	 * the kicks the song really plays, fills and breaks included, instead of a fixed accent per beat.
 	 */
 	private static float hop(double delay) {
-		return beatNow < 0 ? 0 : HUD_HOP * BeatTracker.punchAt(punch, rampedSeconds - delay);
+		return beatNow < 0 ? 0 : HUD_HOP * punchAt(rampedSeconds - delay);
 	}
 
 	/**
@@ -314,7 +331,12 @@ public final class MineAtDisco implements ClientModInitializer {
 	 * camera kick scales by it, held for the whole cycle, so the view never jitters with the waveform.
 	 */
 	public static float cyclePunch() {
-		return beatRaw < 0 ? 0 : BeatTracker.punchAt(punch, BeatTracker.timeAt(beats, 2 * Math.round(beatRaw / 2)) + 0.03);
+		return beatRaw < 0 ? 0 : punchAt(BeatTracker.timeAt(beats, 2 * Math.round(beatRaw / 2)) + 0.03);
+	}
+
+	/** Bass punch at {@code seconds} of song time, from the local song's curve or the live capture. */
+	private static float punchAt(double seconds) {
+		return live() ? livePunch.at(capture, seconds + liveEpoch) : BeatTracker.punchAt(punch, seconds);
 	}
 
 	/** This phrase's disco light: the hue walks around the wheel once per phrase, one step per beat. */
@@ -338,8 +360,17 @@ public final class MineAtDisco implements ClientModInitializer {
 		return beatRaw < 0 || Math.abs(beatRaw - beat) > window ? 0 : ACCENT[(int) (beat % 4)];
 	}
 
+	private static boolean live() {
+		return capture != null;
+	}
+
+	/** True while a local song or live audio drives the game. */
+	private static boolean playing() {
+		return source != 0 || capture != null;
+	}
+
 	private static boolean active() {
-		return !releasing && source != 0 && !paused;
+		return !releasing && playing() && !paused;
 	}
 
 	/** Audio time of the next of {@code lines} grid lines per beat, or NaN when the event can happen now. */
@@ -786,11 +817,13 @@ public final class MineAtDisco implements ClientModInitializer {
 		frameLead = Math.min(MAX_FRAME_LEAD, frameSeconds);
 		if (source != 0) {
 			readClock(nanos, frameSeconds);
+		} else if (live()) {
+			readLive();
 		}
-		double now = source == 0 ? Double.MAX_VALUE : played();
-		double audioBeat = source == 0 || paused ? -1 : BeatTracker.beatAt(beats, now);
+		double now = playing() ? played() : Double.MAX_VALUE;
+		double audioBeat = !playing() || paused ? -1 : BeatTracker.beatAt(beats, now);
 		audioBeatNow = audioBeat;
-		beatRaw = source == 0 ? -1 : BeatTracker.beatAt(beats, visualTime(now));
+		beatRaw = !playing() ? -1 : BeatTracker.beatAt(beats, visualTime(now));
 		ramp();
 		rampedSeconds = beatNow < 0 ? 0 : BeatTracker.timeAt(beats, beatNow);
 		motion += (motionNow - motion) * (1 - (float) Math.exp(-elapsed / 0.3f));
@@ -1081,6 +1114,77 @@ public final class MineAtDisco implements ClientModInitializer {
 		return 1;
 	}
 
+	/**
+	 * Follows the system audio instead of a local song. The capture and its beat analysis run on their own threads;
+	 * the timeline updates twice a second. Works on Windows only, where WASAPI can capture what the speakers play.
+	 */
+	private static void startLive(Minecraft client) {
+		stop();
+		liveEpoch = System.nanoTime() / 1e9;
+		latency = deviceLatency();
+		livePunch = new LivePunch();
+		LiveBeat live = new LiveBeat();
+		LoopbackCapture listening = LoopbackCapture.start();
+		capture = listening;
+		liveUpdates = Executors.newSingleThreadScheduledExecutor(task -> {
+			Thread thread = new Thread(task, "Mine at Disco live beat");
+			thread.setDaemon(true);
+			return thread;
+		});
+		liveUpdates.scheduleAtFixedRate(() -> {
+			try {
+				int rate = listening.rate();
+				// Four seconds give the tracker enough beats to lock on; it looks at up to twelve.
+				int count = (int) Math.min(LiveBeat.WINDOW * rate, listening.written());
+				if (rate == 0 || count < 4 * rate) {
+					return;
+				}
+				short[] window = new short[count];
+				long first = listening.copyLatest(window, count);
+				liveSnapshot = live.update(window, rate, listening.timeOf(first) - liveEpoch, System.nanoTime() / 1e9 - liveEpoch);
+			} catch (RuntimeException e) {
+				liveSnapshot = LiveBeat.Snapshot.EMPTY;
+			}
+		}, 500, 500, TimeUnit.MILLISECONDS);
+		if (client.player != null) {
+			client.player.sendOverlayMessage(Component.translatable("mineatdisco.live.start"));
+		}
+	}
+
+	/** Takes the newest live timeline and works through the audio captured since the last frame. */
+	private static void readLive() {
+		if (capture.failure() != null) {
+			LocalPlayer player = Minecraft.getInstance().player;
+			if (player != null) {
+				player.sendSystemMessage(Component.translatable("mineatdisco.live.failed", capture.failure()));
+			}
+			stop();
+			return;
+		}
+		LiveBeat.Snapshot snapshot = liveSnapshot;
+		beats = snapshot.beats();
+		energy = snapshot.energy();
+		drops = snapshot.drops();
+		livePunch.advance(capture);
+	}
+
+	/** Output latency of Minecraft's audio device in seconds, as OpenAL Soft reports it, or 0 when it doesn't. */
+	private static double deviceLatency() {
+		long device = ALC10.alcGetContextsDevice(ALC10.alcGetCurrentContext());
+		if (device == 0 || !ALC.createCapabilities(device).ALC_SOFT_device_clock) {
+			return 0;
+		}
+		long[] nanos = new long[1];
+		SOFTDeviceClock.alcGetInteger64vSOFT(device, SOFTDeviceClock.ALC_DEVICE_LATENCY_SOFT, nanos);
+		return nanos[0] / 1e9;
+	}
+
+	/** Beats per minute over the last phrase of the timeline, for the menu in live mode. */
+	private static long recentBpm() {
+		int n = beats.length;
+		return n <= BeatTracker.PHRASE ? 0 : Math.round(60 * BeatTracker.PHRASE / (beats[n - 1] - beats[n - 1 - BeatTracker.PHRASE]));
+	}
+
 	private static void playSong(String name, Minecraft client) {
 		stop();
 		int mine = request;
@@ -1112,7 +1216,8 @@ public final class MineAtDisco implements ClientModInitializer {
 
 	/** Doubles or halves the tracked beat grid for songs whose tempo reads half or double. */
 	private static void scaleTempo(boolean doubleTempo) {
-		if (beats.length < 4) {
+		// ponytail: live mode rebuilds its timeline twice a second, so tempo fixes only apply to local songs.
+		if (beats.length < 4 || live()) {
 			return;
 		}
 		double bpm = BeatTracker.bpm(beats);
@@ -1160,7 +1265,7 @@ public final class MineAtDisco implements ClientModInitializer {
 	 * ponytail: taps are measured from the nearest beat, so an offset beyond half a beat needs /disco offset.
 	 */
 	private static void tapOffset() {
-		if (source == 0 || paused || beats.length < 2) {
+		if (!playing() || paused || beats.length < 2) {
 			return;
 		}
 		// The player taps to what they hear, which the speakers play a device latency after the mixer.
@@ -1291,6 +1396,12 @@ public final class MineAtDisco implements ClientModInitializer {
 
 	private static void stop() {
 		request++;
+		if (capture != null) {
+			liveUpdates.shutdownNow();
+			capture.close();
+			capture = null;
+			liveSnapshot = LiveBeat.Snapshot.EMPTY;
+		}
 		if (alive()) {
 			AL10.alSourceStop(source);
 			AL10.alDeleteSources(source);
@@ -1320,15 +1431,18 @@ public final class MineAtDisco implements ClientModInitializer {
 			openMenu = false;
 			client.gui.setScreen(new DiscoScreen());
 		}
-		if (source == 0) {
+		if (!playing()) {
 			return;
 		}
-		if (client.level == null || !alive() || AL10.alGetSourcei(source, AL10.AL_SOURCE_STATE) == AL10.AL_STOPPED) {
+		if (client.level == null
+				|| source != 0 && (!alive() || AL10.alGetSourcei(source, AL10.AL_SOURCE_STATE) == AL10.AL_STOPPED)) {
 			stop();
 			return;
 		}
 		client.getMusicManager().stopPlaying();
-		AL10.alSourcef(source, AL10.AL_GAIN, client.options.getFinalSoundSourceVolume(SoundSource.MUSIC));
+		if (source != 0) {
+			AL10.alSourcef(source, AL10.AL_GAIN, client.options.getFinalSoundSourceVolume(SoundSource.MUSIC));
+		}
 		LocalPlayer player = client.player;
 		if (player != null) {
 			// Walking pace or a turn of 15 degrees per tick counts as full motion.
@@ -1339,7 +1453,8 @@ public final class MineAtDisco implements ClientModInitializer {
 			lastYaw = player.getYRot();
 			lastPitch = player.getXRot();
 		}
-		if (client.isPaused() != paused) {
+		// The game can pause a local song, not the music another program plays.
+		if (source != 0 && client.isPaused() != paused) {
 			paused = !paused;
 			if (paused) {
 				AL10.alSourcePause(source);
@@ -1369,6 +1484,11 @@ public final class MineAtDisco implements ClientModInitializer {
 	 * so they follow this time directly. Between frames it moves on with the system clock.
 	 */
 	private static double played() {
+		if (live()) {
+			// The capture's timestamps say when the speakers play each sample, so live song time is what the player
+			// hears now. Sounds the mod plays still go through OpenAL, so they run one device latency ahead of it.
+			return System.nanoTime() / 1e9 - liveEpoch + latency;
+		}
 		return paused ? playedAt : playedAt + Math.min(0.1, (System.nanoTime() - playedNanos) / 1e9);
 	}
 
@@ -1414,7 +1534,7 @@ public final class MineAtDisco implements ClientModInitializer {
 			gui.pose().pushMatrix();
 			gui.pose().translate(cx, cy);
 			// The ring answers the kick that lands with the beat: bright on a hard hit, faint where the drums rest.
-			float hit = 0.35f + 0.65f * BeatTracker.punchAt(punch, rampedSeconds);
+			float hit = 0.35f + 0.65f * punchAt(rampedSeconds);
 			gui.outline(-size, -size, 2 * size, 2 * size, argb((1 - k) * presence * hit * (bar == 0 ? 1 : 0.5f), bar == 0 ? GOLD : WHITE));
 			gui.pose().popMatrix();
 		}
@@ -1537,6 +1657,8 @@ public final class MineAtDisco implements ClientModInitializer {
 				}
 			}).bounds(cx + 100, 64, 56, 16).build());
 
+			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.live"),
+					b -> startLive(minecraft)).bounds(cx - 100, height / 2 + 14, 200, 20).build());
 			list = songs();
 			int pages = Math.max(1, (list.size() + PAGE_SIZE - 1) / PAGE_SIZE);
 			page = Mth.clamp(page, 0, pages - 1);
@@ -1573,9 +1695,12 @@ public final class MineAtDisco implements ClientModInitializer {
 			if (suggestion != null) {
 				gui.centeredText(font, Component.translatable("mineatdisco.menu.suggested", suggestion), cx - 30, 68, 0xFFCCCCCC);
 			}
-			Component status = source != 0 && beats.length >= 2
-					? Component.translatable("mineatdisco.playing", currentSong, Math.round(BeatTracker.bpm(beats)))
-					: Component.translatable("mineatdisco.menu.idle");
+			Component status = live()
+					? recentBpm() > 0 ? Component.translatable("mineatdisco.live.playing", recentBpm())
+							: Component.translatable("mineatdisco.live.listening")
+					: source != 0 && beats.length >= 2
+							? Component.translatable("mineatdisco.playing", currentSong, Math.round(BeatTracker.bpm(beats)))
+							: Component.translatable("mineatdisco.menu.idle");
 			gui.centeredText(font, status, cx, 11, 0xFFFFFFFF);
 			gui.centeredText(font, latencyReported
 					? Component.translatable("mineatdisco.menu.offset_latency", Math.round(offset * 1000), Math.round(latency * 1000))

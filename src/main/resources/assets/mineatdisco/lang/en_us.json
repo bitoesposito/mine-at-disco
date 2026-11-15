@@ -5,6 +5,10 @@
 	"mineatdisco.playing": "Playing %s at %s BPM",
 	"mineatdisco.muted": "Music or Master volume is at 0%%, so the song is silent. Raise it in the sound options",
 	"mineatdisco.stopped": "Music stopped",
+	"mineatdisco.live.start": "Listening to your system audio...",
+	"mineatdisco.live.playing": "Following your system audio at %s BPM",
+	"mineatdisco.live.listening": "Listening to your system audio, no beat yet",
+	"mineatdisco.live.failed": "Could not capture your system audio: %s",
 	"mineatdisco.not_found": "No song named %s. Put .ogg files in %s",
 	"mineatdisco.failed": "Could not load %s. It must be an Ogg Vorbis file in mono or stereo",
 	"mineatdisco.offset": "Audio offset is now %s ms",
@@ -24,5 +28,6 @@
 	"mineatdisco.menu.apply": "Apply",
 	"mineatdisco.menu.prev": "<",
 	"mineatdisco.menu.next": ">",
-	"mineatdisco.menu.empty": "Put .ogg files in %s"
+	"mineatdisco.menu.empty": "Put .ogg files in %s",
+	"mineatdisco.menu.live": "System audio (Spotify, browser, any player)"
 }
