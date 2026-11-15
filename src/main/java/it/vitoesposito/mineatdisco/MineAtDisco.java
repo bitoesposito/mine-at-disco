@@ -100,6 +100,8 @@ public final class MineAtDisco implements ClientModInitializer {
 			EnumSet.of(SoundSource.BLOCKS, SoundSource.PLAYERS, SoundSource.HOSTILE, SoundSource.NEUTRAL);
 	/** Seconds mining counts as going on after the game last reported a hit on the block. */
 	private static final double MINING_GRACE = 0.3;
+	/** Beats the first block of a mining run may wait past vanilla's break time to land on a beat. */
+	private static final double FIRST_BLOCK_WAIT = 0.25;
 	/** Chips per mining hit on the first beat of the bar at full loudness. */
 	private static final int CHIPS = 10;
 	/** Distance in beats from the nearest beat within which a player attack counts as on-beat. */
@@ -578,10 +580,11 @@ public final class MineAtDisco implements ClientModInitializer {
 	}
 
 	/**
-	 * Picks the beat on which the block at {@code pos} will break. When the player holds click across blocks, vanilla's
-	 * 5-tick cooldown between blocks is folded into the block's duration, so fast mining (such as Efficiency V on stone)
-	 * breaks one block per beat without drifting or skipping beats. Slower blocks drift toward strong beats, see
-	 * BeatTracker.landing, so a chain of bar-long blocks settles onto beat 1.
+	 * Picks the beat on which the block at {@code pos} will break. The first block of a run answers the click like
+	 * vanilla. When the player holds click across blocks, vanilla's 5-tick cooldown between blocks is folded into the
+	 * block's duration, so fast mining (such as Efficiency V on stone) breaks one block per beat without drifting or
+	 * skipping beats. Slower blocks drift toward strong beats, see BeatTracker.landing, so a chain of bar-long blocks
+	 * settles onto beat 1. A NaN target leaves the block to vanilla.
 	 */
 	public static void startMining(BlockPos pos, Direction side) {
 		if (!syncMining()) {
@@ -609,19 +612,23 @@ public final class MineAtDisco implements ClientModInitializer {
 		crackPos = miningPos;
 		boolean chained = now - lastBreakTime < 0.25;
 		crackStartBeat = chained ? lastBreakBeat : (beatRaw >= 0 ? beatRaw : audioBeat);
-		double vanillaSeconds = (breakTicks(step) + (chained ? 5 : 0)) / 20.0;
 		// Never break before vanilla would. The server takes a break once its own count reaches 70%, but client and
 		// server ticks drift apart by a tick or two, and a break that comes too early gets the block put back.
-		double minBeat = Math.ceil(BeatTracker.beatAt(beats, now + breakTicks(step) / 20.0));
-		double idealBeat = BeatTracker.beatAt(beats, now + vanillaSeconds);
-		if (minBeat < 0 || idealBeat < 0) {
+		double earliest = BeatTracker.beatAt(beats, now + breakTicks(step) / 20.0);
+		double idealBeat = BeatTracker.beatAt(beats, now + (breakTicks(step) + 5) / 20.0);
+		if (earliest < 0 || idealBeat < 0) {
 			crackPos = null;
 			targetBeat = Double.NaN;
 			return;
 		}
-		if (chained) {
-			minBeat = Math.max(minBeat, lastBreakBeat + 1);
+		if (!chained) {
+			// Holding a block past vanilla's time feels like the pickaxe stopped working, and the player moves on before
+			// it breaks. So the first block only waits for a beat a quarter beat away; its burst still lands on the grid.
+			double next = Math.ceil(earliest);
+			targetBeat = next - earliest <= FIRST_BLOCK_WAIT ? next : Double.NaN;
+			return;
 		}
+		double minBeat = Math.max(Math.ceil(earliest), Math.floor(lastBreakBeat) + 1);
 		targetBeat = Math.max(minBeat, BeatTracker.landing(idealBeat, idealBeat - audioBeat));
 	}
 
@@ -638,6 +645,12 @@ public final class MineAtDisco implements ClientModInitializer {
 			startMining(pos, side);
 		}
 		if (crackPos == null || Double.isNaN(targetBeat) || targetBeat < 0) {
+			if (crackPos != null && vanillaProgress >= 1) {
+				// A block left to vanilla breaks this tick. Note it, so the next one in the run locks onto the beat.
+				lastBreakTime = played();
+				lastBreakBeat = BeatTracker.beatAt(beats, lastBreakTime);
+				crackPos = null;
+			}
 			return vanillaProgress;
 		}
 		Minecraft client = Minecraft.getInstance();
@@ -767,7 +780,7 @@ public final class MineAtDisco implements ClientModInitializer {
 				chip(visualEighth);
 			}
 		}
-		if (crackPos != null && beatNow >= 0) {
+		if (crackPos != null && beatNow >= 0 && !Double.isNaN(targetBeat)) {
 			Minecraft client = Minecraft.getInstance();
 			if (client.level != null && client.player != null && client.gameMode != null
 					&& client.gameMode.isDestroying() && !client.level.getBlockState(crackPos).isAir()) {

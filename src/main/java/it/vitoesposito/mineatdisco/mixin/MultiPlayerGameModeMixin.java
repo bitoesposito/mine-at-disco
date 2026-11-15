@@ -1,5 +1,7 @@
 package it.vitoesposito.mineatdisco.mixin;
 
+import com.llamalad7.mixinextras.injector.ModifyReturnValue;
+import com.llamalad7.mixinextras.sugar.Local;
 import it.vitoesposito.mineatdisco.MineAtDisco;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.MultiPlayerGameMode;
@@ -7,6 +9,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -36,6 +39,23 @@ public abstract class MultiPlayerGameModeMixin {
 	private Direction destroyDirection;
 	@Shadow
 	private boolean isDestroying;
+	@Shadow
+	private ItemStack destroyingItem;
+
+	// Without the cooldown, the server's durability update for the last block lands while the next one is being mined,
+	// and vanilla would start that block over. Keep mining it with the worn tool instead.
+	@ModifyReturnValue(method = "sameDestroyTarget", at = @At("RETURN"))
+	private boolean mineatdisco$wornTool(boolean same, @Local(argsOnly = true) BlockPos pos) {
+		if (same || !MineAtDisco.syncMining() || minecraft.player == null || !pos.equals(destroyBlockPos)) {
+			return same;
+		}
+		ItemStack held = minecraft.player.getMainHandItem();
+		if (!ItemStack.isSameItem(held, destroyingItem)) {
+			return false;
+		}
+		destroyingItem = held;
+		return true;
+	}
 
 	@Inject(method = "startDestroyBlock", at = @At("TAIL"))
 	private void mineatdisco$start(BlockPos pos, Direction side, CallbackInfoReturnable<Boolean> info) {
