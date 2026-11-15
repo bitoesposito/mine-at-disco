@@ -33,6 +33,10 @@ Tuning the owner asked for, in order:
 15. Repeated actions settle onto strong beats. `BeatTracker.landing` picks the break beat near vanilla's time but pulls it toward beat 1 for bar-long blocks and beats 1 and 3 for two-beat blocks, by at most 30% of the block's time per break, so a chain locks onto the downbeat within a couple of blocks.
 16. The HUD got a full pass: four brackets fly in and land on the beat (gold before beat 1), a ring opens where they land, the bar pips pop, the hotbar and bars bounce smoothly in a wave from left to right, and breaking, placing or hitting on the beat answers with sparks in the phrase's disco color.
 17. Multiplayer: mining pacing and the instant shield only run in a world this game hosts, mob timing and parries only in one not open to LAN. On servers the mod is visual and sound only.
+18. With a diamond pickaxe stone could not be mined: the beat snap broke blocks right at the server's 70% mark, the server queued one early break and dropped the next, and the block came back. Blocks now never break before vanilla would (only the cooldown between blocks is folded in), and `landing` leans early, so a diamond pickaxe on stone keeps one block per beat.
+19. Ready cue: the brackets turn red on the beat where a full-strength swing (during a fight) or a full bow draw will be ready, so full hits land in time.
+20. Drops: `BeatTracker.drops` marks the bars where the band comes back after a quiet stretch. There a rainbow ring rolls out from the player, fireworks go up around them, the trees let go and the HUD answers.
+21. Kills land on the beat: a mob's hurt flash stays on the eighth note, its death waits for the next beat and pops with sparks and a HUD answer.
 
 ## Code map
 
@@ -40,7 +44,7 @@ Tuning the owner asked for, in order:
 - `MineAtDisco.java` holds everything else: `/disco` (menu, `play`, `stop`, `offset`, `tap`, `x2`, `half`), the `M` and `B` keybinds and `DiscoScreen`, playback on the mod's own OpenAL source, the audio clock, the sound grid, mining, combat, breaking and placing effects, leaves, the HUD.
 - `mixin/SoundEngineMixin` holds world sounds until the next grid line and calls `frame()` once per frame.
 - `mixin/ClientLevelMixin` takes over the mining hit effect and the block break burst. `mixin/MultiPlayerGameModeMixin` paces block breaking and cracks to the beat and hooks player attacks.
-- `mixin/LivingEntityMixin` holds mob hurt and death visuals until the next eighth note, removes the 5-tick shield delay while music plays, and handles perfect parries. `mixin/MeleeAttackGoalMixin` holds melee mob strikes until the beat after a pre-beat warning cue, and `mixin/CreeperMixin` holds creeper detonations until the beat.
+- `mixin/LivingEntityMixin` holds mob hurt visuals until the next eighth note and deaths until the next beat, removes the 5-tick shield delay while music plays, and handles perfect parries. `mixin/MeleeAttackGoalMixin` holds melee mob strikes until the beat after a pre-beat warning cue, and `mixin/CreeperMixin` holds creeper detonations until the beat.
 - `mixin/LivingEntityRendererMixin` is the mob and player dance and bends walk, hand-swing and death animations during a ramp. `mixin/EntityRendererMixin` bends entity animation during a ramp. `mixin/CameraMixin` is the FOV kick and `mixin/ParticleMixin` bends particle motion during a ramp. `mixin/FallingLeavesInvoker` sheds leaves.
 - User-facing text lives in `assets/mineatdisco/lang/en_us.json`. Never hardcode a string the player sees.
 

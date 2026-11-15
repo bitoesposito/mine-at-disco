@@ -12,7 +12,10 @@ While a song plays:
 - Mining hits land on every eighth note with a spray of chips off the block, louder and bigger on the beat. Blocks finish breaking on the beat in a ring of chips, with colored sparks on beats 1 and 3. Their cracks ramp with the beat, and a placed block kicks up dust on the next sixteenth.
 - Combat snaps to the song: your hits flash and burst on the eighth note (bigger when you strike on the beat), melee mobs cue on the off-beat and strike on the beat, creepers detonate on the beat, and raising your shield right before a hit lands a perfect parry.
 - Every beat runs a velocity ramp: animations, particles and cracks slow down for a moment and then whip forward into the next beat, like a velocity edit. Chips hang in the air, then fly.
-- Repeated mining drifts toward strong beats, so a chain of slow blocks settles onto beat 1. Breaking, placing or hitting on the beat answers with sparks around the crosshair.
+- Repeated mining drifts toward strong beats, so a chain of slow blocks settles onto beat 1, and it never runs much slower than vanilla. Breaking, placing or hitting on the beat answers with sparks around the crosshair.
+- In a fight the brackets turn red on the beat where your next full-strength swing or full bow draw will be ready.
+- When the band comes back after a break, a rainbow ring rolls out from you, fireworks go up and the trees let go.
+- Mobs flash on the eighth note when hit and fall on the next beat when killed.
 - Other world sounds wait for the song's grid: footsteps and combat on eighth notes, the rest on the next sixteenth.
 - Every effect grows when the song is loud and calms down in quiet parts. Extra particles follow your Particles setting.
 
