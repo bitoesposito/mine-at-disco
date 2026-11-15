@@ -17,6 +17,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -55,7 +56,6 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.util.ARGB;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.damagesource.DamageSource;
@@ -82,8 +82,14 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static final double ON_GRID = 0.2;
 	/** How hard each beat of the bar hits. The first beat leads, the third answers. */
 	private static final float[] ACCENT = {1, 0.4f, 0.7f, 0.4f};
-	private static final float HUD_HOP = 4;
+	/** GUI pixels the hotbar and status bars rise on beat 1 at full loudness. */
+	private static final float HUD_HOP = 3;
+	/** Share of a beat the landing ring takes to open and fade. */
+	private static final float RING = 0.35f;
+	/** Beats the sparks answering an on-beat action take to fly out and fade. */
+	private static final float FLASH_BEATS = 0.6f;
 	private static final int GOLD = 0xFFD040;
+	private static final int WHITE = 0xFFFFFF;
 	private static final Set<SoundSource> WORLD_SOUNDS =
 			EnumSet.of(SoundSource.BLOCKS, SoundSource.PLAYERS, SoundSource.HOSTILE, SoundSource.NEUTRAL);
 	/** Seconds mining counts as going on after the game last reported a hit on the block. */
@@ -130,6 +136,10 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static double beatRaw = -1;
 	private static float particleSpeed = 1;
 	private static float lagTicks;
+	// The last action that landed on the beat, for the HUD sparks: when (visual beat), how strong, which color.
+	private static double flashBeat = Double.NEGATIVE_INFINITY;
+	private static float flashStrength;
+	private static int flashColor = WHITE;
 	/**
 	 * Whether this game runs the world itself, and whether it runs it alone (not open to LAN). Timing changes need the
 	 * first, changes to mobs the second. On a server the mod only moves visuals and sounds, which anticheats ignore.
@@ -177,18 +187,17 @@ public final class MineAtDisco implements ClientModInitializer {
 		ClientTickEvents.END_CLIENT_TICK.register(MineAtDisco::tick);
 		HudElementRegistry.attachElementAfter(VanillaHudElements.CROSSHAIR,
 				Identifier.fromNamespaceAndPath("mineatdisco", "beat"), MineAtDisco::drawBeat);
-		// The hotbar and the status bars hop with the pulse.
-		for (Identifier element : List.of(VanillaHudElements.HOTBAR, VanillaHudElements.HEALTH_BAR,
-				VanillaHudElements.ARMOR_BAR, VanillaHudElements.FOOD_BAR, VanillaHudElements.AIR_BAR,
-				VanillaHudElements.MOUNT_HEALTH, VanillaHudElements.INFO_BAR, VanillaHudElements.EXPERIENCE_LEVEL,
-				VanillaHudElements.INFO_BAR_FOREGROUND)) {
-			HudElementRegistry.replaceElement(element, original -> (gui, delta) -> {
-				gui.pose().pushMatrix();
-				gui.pose().translate(0, -HUD_HOP * pulse());
-				original.extractRenderState(gui, delta);
-				gui.pose().popMatrix();
-			});
-		}
+		// After each beat the hotbar and the status bars bounce in a wave from left to right, delayed in beats.
+		Map.of(VanillaHudElements.HEALTH_BAR, 0.0, VanillaHudElements.ARMOR_BAR, 0.0,
+				VanillaHudElements.HOTBAR, 0.05, VanillaHudElements.EXPERIENCE_LEVEL, 0.05,
+				VanillaHudElements.INFO_BAR, 0.05, VanillaHudElements.INFO_BAR_FOREGROUND, 0.05,
+				VanillaHudElements.FOOD_BAR, 0.1, VanillaHudElements.AIR_BAR, 0.1, VanillaHudElements.MOUNT_HEALTH, 0.1)
+				.forEach((element, delay) -> HudElementRegistry.replaceElement(element, original -> (gui, delta) -> {
+					gui.pose().pushMatrix();
+					gui.pose().translate(0, -hop(delay));
+					original.extractRenderState(gui, delta);
+					gui.pose().popMatrix();
+				}));
 		ClientCommandRegistrationCallback.EVENT.register((dispatcher, context) -> dispatcher.register(literal("disco")
 				.executes(command -> {
 					openMenu = true;
@@ -248,13 +257,35 @@ public final class MineAtDisco implements ClientModInitializer {
 		return 0.25f + energyNow;
 	}
 
-	/** Peaks on each beat and eases to 0 before the next. Highest on the first beat of the bar and when the song is loud. */
-	public static float pulse() {
-		if (beatNow < 0) {
+	/** HUD bounce: a smooth hump over the first half of each beat, sized by the bar accent and the loudness. */
+	private static float hop(double delay) {
+		double beat = beatNow - delay;
+		if (beatNow < 0 || beat < 0) {
 			return 0;
 		}
-		double left = 1 - beatNow % 1;
-		return ACCENT[(int) beatNow % 4] * (float) (left * left) * drive();
+		double u = beat % 1;
+		return u >= 0.5 ? 0 : HUD_HOP * ACCENT[(int) beat % 4] * drive() * (float) Math.sin(2 * Math.PI * u);
+	}
+
+	/** This phrase's disco light: the hue walks around the wheel once per phrase, one step per beat. */
+	private static int discoColor(long beat) {
+		return Mth.hsvToRgb((float) Math.floorMod(beat, BeatTracker.PHRASE) / BeatTracker.PHRASE, 0.7f, 1);
+	}
+
+	/** Answers an action that landed on the beat with colored sparks around the crosshair. */
+	private static void flashHud(float strength) {
+		if (beatNow < 0) {
+			return;
+		}
+		flashBeat = beatNow;
+		flashStrength = Math.min(1, strength);
+		flashColor = discoColor(Math.round(beatRaw));
+	}
+
+	/** How strong the beat nearest to now is, 0 when the steady visual beat is more than {@code window} beats away. */
+	private static float beatStrength(double window) {
+		long beat = Math.round(beatRaw);
+		return beatRaw < 0 || Math.abs(beatRaw - beat) > window ? 0 : ACCENT[(int) (beat % 4)];
 	}
 
 	private static boolean active() {
@@ -379,6 +410,9 @@ public final class MineAtDisco implements ClientModInitializer {
 		boolean onBeat = beat >= 0 && Math.abs(beat - Math.round(beat)) <= BEAT_WINDOW;
 		int id = target.getId();
 		double due = nextLine(2);
+		if (onBeat) {
+			flashHud(1);
+		}
 		Runnable effect = () -> {
 			ClientLevel level = Minecraft.getInstance().level;
 			Entity hit = level == null ? null : level.getEntity(id);
@@ -758,25 +792,30 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 	}
 
-	/** Blows a broken block apart: a ring of chips flying out, plus colored sparks when it breaks on beat 1 or 3. */
+	/**
+	 * Blows a broken block apart: a ring of chips flying out, bigger on strong beats. On beats 1 and 3 colored sparks
+	 * join in and the HUD answers, so landing a break on the beat pays off.
+	 */
 	private static void pop(BlockPos pos, BlockState state) {
 		ClientLevel level = Minecraft.getInstance().level;
 		RandomSource random = level.getRandom();
 		Vec3 center = Vec3.atCenterOf(pos);
 		BlockParticleOption chips = new BlockParticleOption(ParticleTypes.BLOCK, state);
-		for (int i = amount(16 * drive()); i > 0; i--) {
+		float strength = beatStrength(0.25);
+		if (strength > 0) {
+			flashHud(strength);
+		}
+		for (int i = amount((10 + 10 * strength) * drive()); i > 0; i--) {
 			double angle = random.nextDouble() * 2 * Math.PI;
 			double speed = 0.15 + 0.15 * random.nextDouble();
 			spawn(chips, center.x, center.y, center.z, Math.cos(angle) * speed, 0.1 + 0.2 * random.nextDouble(),
 					Math.sin(angle) * speed);
 		}
-		long beat = Math.round(beatRaw);
-		if (beatRaw < 0 || beat % 2 != 0 || Math.abs(beatRaw - beat) > 0.25) {
+		if (strength < 0.7f) {
 			return;
 		}
-		// The color walks around the hue wheel once per phrase, so each downbeat break gets the next disco light.
-		DustParticleOptions spark = new DustParticleOptions(Mth.hsvToRgb((float) beat / BeatTracker.PHRASE % 1, 0.7f, 1), 1.3f);
-		for (int i = amount(12 * drive()); i > 0; i--) {
+		DustParticleOptions spark = new DustParticleOptions(discoColor(Math.round(beatRaw)), 1.3f);
+		for (int i = amount(12 * strength * drive()); i > 0; i--) {
 			double angle = random.nextDouble() * 2 * Math.PI;
 			// Dust barely slows down in the air, so a slower start keeps the ring within about three blocks.
 			double speed = 0.18 + 0.12 * random.nextDouble();
@@ -797,7 +836,11 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 		BlockParticleOption chips = new BlockParticleOption(ParticleTypes.BLOCK, state);
 		RandomSource random = level.getRandom();
-		for (int i = amount(CHIPS * drive()); i > 0; i--) {
+		float strength = beatStrength(0.12);
+		if (strength > 0) {
+			flashHud(strength / 2);
+		}
+		for (int i = amount(CHIPS * (1 + strength) * drive()); i > 0; i--) {
 			// A point just outside one of the block's bottom edges. Inside the block the chip would be stuck.
 			double along = random.nextDouble() - 0.5;
 			double out = random.nextBoolean() ? 0.52 : -0.52;
@@ -1084,23 +1127,72 @@ public final class MineAtDisco implements ClientModInitializer {
 		return played;
 	}
 
-	/** A square that closes on the crosshair and lands on the beat, over four pips that count the bar. */
+	/**
+	 * The beat cue around the crosshair. Four brackets fly in and land on the beat, gold when the next beat opens the
+	 * bar. A ring opens where they land, the pips below count the bar, and an action on the beat answers with sparks in
+	 * the phrase's disco color. It all follows the velocity ramp and fades in quiet parts.
+	 */
 	private static void drawBeat(GuiGraphicsExtractor gui, DeltaTracker delta) {
 		if (beatNow < 0) {
 			return;
 		}
+		float cx = gui.guiWidth() / 2f;
+		float cy = gui.guiHeight() / 2f;
 		float phase = (float) (beatNow % 1);
-		int size = 9 + 2 * Math.round(12 * (1 - phase));
-		gui.outline((gui.guiWidth() - size) / 2, (gui.guiHeight() - size) / 2, size, size, ARGB.white(0.2f + 0.8f * phase));
+		int bar = (int) beatNow % 4;
+		float presence = Math.min(1, 0.4f + 0.6f * drive());
+		float flash = (float) (beatNow - flashBeat) / FLASH_BEATS;
+		boolean flashing = flash >= 0 && flash < 1;
 
-		int now = (int) beatNow % 4;
-		int y = gui.guiHeight() / 2 + 24;
-		for (int pip = 0; pip < 4; pip++) {
-			int x = gui.guiWidth() / 2 + (pip * 2 - 3) * 6;
-			int half = pip == now ? 3 : 1;
-			int color = (pip == now ? 0xFF000000 : 0x80000000) | (pip == 0 ? GOLD : 0xFFFFFF);
-			gui.fill(x - half, y - half, x + half, y + half, color);
+		// Squaring the phase makes the brackets start slow and rush into the beat.
+		float radius = 5 + 14 * (1 - phase * phase);
+		int bracketColor = argb(presence * (0.25f + 0.75f * phase), flashing ? flashColor : bar == 3 ? GOLD : WHITE);
+		for (int corner = 0; corner < 4; corner++) {
+			int sx = corner % 2 == 0 ? -1 : 1;
+			int sy = corner < 2 ? -1 : 1;
+			bracket(gui, cx + sx * radius, cy + sy * radius, sx, sy, bracketColor);
 		}
+
+		if (phase < RING) {
+			float k = phase / RING;
+			int size = Math.round(5 + 10 * k * (bar == 0 ? 1.5f : 1));
+			gui.pose().pushMatrix();
+			gui.pose().translate(cx, cy);
+			gui.outline(-size, -size, 2 * size, 2 * size, argb((1 - k) * presence * (bar == 0 ? 1 : 0.5f), bar == 0 ? GOLD : WHITE));
+			gui.pose().popMatrix();
+		}
+
+		for (int pip = 0; pip < 4; pip++) {
+			float pop = pip == bar ? 1 + 1.5f * (1 - phase) * (1 - phase) : 0.6f;
+			gui.pose().pushMatrix();
+			gui.pose().translate(cx + (pip * 2 - 3) * 6, cy + 24);
+			gui.pose().scale(pop);
+			gui.fill(-1, -1, 1, 1, argb(presence * (pip == bar ? 1 : 0.4f), pip == 0 ? GOLD : WHITE));
+			gui.pose().popMatrix();
+		}
+
+		for (int spark = 0; flashing && spark < 4; spark++) {
+			gui.pose().pushMatrix();
+			gui.pose().translate(cx, cy);
+			gui.pose().rotate((float) (Math.PI / 4 + spark * Math.PI / 2));
+			gui.pose().translate(9 + 12 * flash, 0);
+			gui.fill(0, 0, Math.round(3 + 3 * flashStrength), 1, argb((1 - flash) * (1 - flash) * flashStrength, flashColor));
+			gui.pose().popMatrix();
+		}
+	}
+
+	/** An L-shaped bracket with its corner at (x, y) and its arms pointing back toward the crosshair. */
+	private static void bracket(GuiGraphicsExtractor gui, float x, float y, int sx, int sy, int color) {
+		int arm = 4;
+		gui.pose().pushMatrix();
+		gui.pose().translate(x, y);
+		gui.fill(sx < 0 ? 0 : -arm, sy < 0 ? 0 : -1, sx < 0 ? arm : 0, sy < 0 ? 1 : 0, color);
+		gui.fill(sx < 0 ? 0 : -1, sy < 0 ? 1 : -arm, sx < 0 ? 1 : 0, sy < 0 ? arm : -1, color);
+		gui.pose().popMatrix();
+	}
+
+	private static int argb(float alpha, int rgb) {
+		return Math.round(Mth.clamp(alpha, 0, 1) * 255) << 24 | rgb & 0xFFFFFF;
 	}
 
 	private static boolean saveOffset(int ms) {
@@ -1124,7 +1216,7 @@ public final class MineAtDisco implements ClientModInitializer {
 
 	/**
 	 * In-world song picker and calibration screen. Keeps the game unpaused and leaves the crosshair clear so the player
-	 * can watch the beat square while tapping Space or adjusting tempo.
+	 * can watch the beat cue while tapping Space or adjusting tempo.
 	 */
 	private static final class DiscoScreen extends Screen {
 		private static final int PAGE_SIZE = 4;
@@ -1182,7 +1274,7 @@ public final class MineAtDisco implements ClientModInitializer {
 
 		@Override
 		public void extractBackground(GuiGraphicsExtractor gui, int mouseX, int mouseY, float partialTick) {
-			// Keep the center around the crosshair clear so the beat square and pips stay visible while calibrating.
+			// Keep the center around the crosshair clear so the beat cue and pips stay visible while calibrating.
 			gui.fill(width / 2 - 164, 6, width / 2 + 164, 62, 0x90000000);
 		}
 
