@@ -5,9 +5,12 @@
 	"client": [
 		"CameraMixin",
 		"ClientLevelMixin",
+		"ClientPacketListenerMixin",
 		"CreeperMixin",
 		"EntityRendererMixin",
 		"FallingLeavesInvoker",
+		"ItemStackMixin",
+		"LevelEventHandlerMixin",
 		"LivingEntityMixin",
 		"LivingEntityRendererMixin",
 		"MeleeAttackGoalMixin",

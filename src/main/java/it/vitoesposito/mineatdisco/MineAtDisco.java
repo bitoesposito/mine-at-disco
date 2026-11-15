@@ -46,6 +46,7 @@ import net.minecraft.client.resources.sounds.SoundInstance;
 import net.minecraft.client.resources.sounds.TickableSoundInstance;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.Direction;
 import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.DustParticleOptions;
@@ -64,6 +65,8 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BowItem;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.component.Consumable;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
@@ -319,19 +322,31 @@ public final class MineAtDisco implements ClientModInitializer {
 				|| sound instanceof TickableSoundInstance) {
 			return false;
 		}
-		// Footsteps, combat and breaking blocks fall on eighth notes like the mining hits. Other sounds take the next sixteenth.
+		// Footsteps, combat, breaking blocks, throws and shots fall on eighth notes like the mining hits. Other sounds
+		// take the next sixteenth.
 		String name = sound.getIdentifier().getPath();
-		boolean eighth = name.endsWith(".hit") || name.endsWith(".step") || name.endsWith(".break")
-				|| name.endsWith(".hurt") || name.endsWith(".death") || name.startsWith("entity.player.attack.")
-				|| name.equals("item.shield.block");
+		boolean launch = name.endsWith(".throw") || name.endsWith(".shoot") || name.endsWith(".launch");
+		boolean eighth = launch || name.endsWith(".hit") || name.endsWith(".step") || name.endsWith(".break")
+				|| name.endsWith(".hurt") || name.endsWith(".death") || name.endsWith(".burp")
+				|| name.startsWith("entity.player.attack.") || name.equals("item.shield.block");
+		// A throw or shot the player let go close to the beat gets an answer on the HUD.
+		LocalPlayer player = Minecraft.getInstance().player;
+		float thrownOnBeat = launch && player != null && player.distanceToSqr(sound.getX(), sound.getY(), sound.getZ()) < 4
+				? beatStrength(0.15) : 0;
 		double due = nextLine(eighth ? 2 : 4);
 		if (Double.isNaN(due)) {
+			if (thrownOnBeat > 0) {
+				flashHud(thrownOnBeat * 0.7f);
+			}
 			return false;
 		}
 		deferred.add(new Deferred(() -> {
 			play.accept(sound);
 			if (name.endsWith(".place")) {
 				puff(sound.getX(), sound.getY(), sound.getZ());
+			}
+			if (thrownOnBeat > 0) {
+				flashHud(thrownOnBeat * 0.7f);
 			}
 		}, due));
 		return true;
@@ -453,6 +468,27 @@ public final class MineAtDisco implements ClientModInitializer {
 			}
 		}, due));
 		return true;
+	}
+
+	/**
+	 * Holds an impact until the next eighth note, a thrown snowball or egg bursting or a splash potion breaking, and adds
+	 * sparks there, more on the beat. Returns true to skip the vanilla effect for now.
+	 */
+	public static boolean holdImpact(double x, double y, double z, Runnable action) {
+		if (!active()) {
+			return false;
+		}
+		double due = nextLine(2);
+		deferred.add(new Deferred(() -> {
+			action.run();
+			sparks(new Vec3(x, y, z), amount((4 + 8 * beatStrength(0.25)) * drive()));
+		}, Double.isNaN(due) ? 0 : due));
+		return true;
+	}
+
+	/** True when the mod plays this entity's chewing and drinking on the beat instead of vanilla's 4-tick timer. */
+	public static boolean ownsChewing(LivingEntity entity) {
+		return active() && entity == Minecraft.getInstance().player;
 	}
 
 	/**
@@ -720,6 +756,9 @@ public final class MineAtDisco implements ClientModInitializer {
 			if (eighth >= 0 && mining) {
 				knock(eighth);
 			}
+			if (eighth >= 0) {
+				chew(eighth);
+			}
 		}
 		int visualEighth = (int) Math.floor(beatRaw * 2);
 		if (visualEighth != lastVisualEighth) {
@@ -801,6 +840,30 @@ public final class MineAtDisco implements ClientModInitializer {
 		Particle particle = Minecraft.getInstance().particleEngine.createParticle(type, x, y, z, 0, 0, 0);
 		if (particle != null) {
 			particle.setParticleSpeed(vx, vy, vz);
+		}
+	}
+
+	/** A bite or a sip on an eighth note while the player eats or drinks: the item's own sound and crumbs, more on the beat. */
+	private static void chew(int eighth) {
+		LocalPlayer player = Minecraft.getInstance().player;
+		if (player == null || !player.isUsingItem()) {
+			return;
+		}
+		ItemStack stack = player.getUseItem();
+		Consumable food = stack.get(DataComponents.CONSUMABLE);
+		if (food == null) {
+			return;
+		}
+		// Like vanilla, no bite during the first 22% of the time it takes to eat.
+		int total = Math.round(food.consumeSeconds() * 20);
+		if (total - player.getUseItemRemainingTicks() <= total * 0.21875f) {
+			return;
+		}
+		releasing = true;
+		try {
+			food.emitParticlesAndSounds(player.getRandom(), player, stack, eighth % 2 == 0 ? 8 : 3);
+		} finally {
+			releasing = false;
 		}
 	}
 
