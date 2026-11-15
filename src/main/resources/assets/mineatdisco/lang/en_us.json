@@ -1,0 +1,9 @@
+{
+	"mineatdisco.loading": "Finding the beat in %s...",
+	"mineatdisco.playing": "Playing %s at %s BPM",
+	"mineatdisco.stopped": "Music stopped",
+	"mineatdisco.not_found": "No song named %s. Put .ogg files in %s",
+	"mineatdisco.failed": "Could not load %s. It must be an Ogg Vorbis file in mono or stereo",
+	"mineatdisco.offset": "Audio offset is now %s ms",
+	"mineatdisco.offset_not_saved": "Audio offset is %s ms until you quit. It could not be saved"
+}

@@ -1,0 +1,25 @@
+{
+	"schemaVersion": 1,
+	"id": "mineatdisco",
+	"version": "${version}",
+	"name": "Mine at Disco",
+	"description": "Plays your own music and syncs the game to its beat.",
+	"authors": [
+		"Vito Esposito"
+	],
+	"contact": {
+		"sources": "https://github.com/bitoesposito/mine-at-disco"
+	},
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"it.vitoesposito.mineatdisco.MineAtDisco"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
