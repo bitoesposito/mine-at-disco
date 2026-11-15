@@ -71,8 +71,10 @@ import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
+import org.lwjgl.openal.AL;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.openal.AL11;
+import org.lwjgl.openal.SOFTSourceLatency;
 import org.lwjgl.stb.STBVorbis;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -81,7 +83,13 @@ import org.lwjgl.system.libc.LibCStdlib;
 /** Plays a song from the disco folder and moves the game to its beat. */
 public final class MineAtDisco implements ClientModInitializer {
 	private static final Path SONGS = FabricLoader.getInstance().getGameDir().resolve("disco");
-	private static final Path OFFSET_FILE = SONGS.resolve("offset.txt");
+	/**
+	 * The player's extra audio delay in ms. It used to hold the whole output latency; now OpenAL reports that, so the
+	 * file got a new name and old values, which would count the latency twice, are left behind.
+	 */
+	private static final Path OFFSET_FILE = SONGS.resolve("audio-offset.txt");
+	/** Longest frame time used to draw a frame ahead, see visualTime. */
+	private static final double MAX_FRAME_LEAD = 0.025;
 	/** A sound this soon after a grid line, as a share of a grid step, plays at once. */
 	private static final double ON_GRID = 0.2;
 	/** How hard each beat of the bar hits. The first beat leads, the third answers. */
@@ -125,9 +133,17 @@ public final class MineAtDisco implements ClientModInitializer {
 	/** Beats where the band comes back after a quiet stretch, see BeatTracker.drops. */
 	private static boolean[] drops = {};
 	private static boolean paused;
-	/** Largest (audio position - system clock) seen since the last start or resume, see played(). */
-	private static double anchor;
-	/** Seconds to delay what you see, to make up for audio output latency. */
+	/** Smoothed mixer position, the system time it was read at, and the clock that smooths it. See played(). */
+	private static final AudioClock clock = new AudioClock();
+	private static double playedAt;
+	private static long playedNanos;
+	/** Seconds from the mixer to the speakers as OpenAL reports it, 0 when the driver doesn't say. */
+	private static double latency;
+	private static boolean latencyReported;
+	private static final double[] offsetAndLatency = new double[2];
+	/** Duration of the last frame, which is about how long a frame drawn now takes to reach the screen. */
+	private static double frameLead;
+	/** Seconds the player hears the song later than OpenAL reports, such as Bluetooth delay. Set by tapping. */
 	private static double offset;
 	/** Counts play and stop requests, so a song that finishes loading late knows it was replaced. */
 	private static int request;
@@ -738,16 +754,21 @@ public final class MineAtDisco implements ClientModInitializer {
 		lagTicks = (float) (20 * (BeatTracker.timeAt(beats, beatRaw) - BeatTracker.timeAt(beats, beatNow)));
 	}
 
-	/** Runs once per frame: refreshes the beat and the loudness, then runs the effects that are due. */
+	/** Runs once per frame: refreshes the clocks, the beat and the loudness, then runs the effects that are due. */
 	public static void frame() {
+		long nanos = System.nanoTime();
+		double frameSeconds = (nanos - lastFrame) / 1e9;
+		float elapsed = (float) Math.min(0.1, frameSeconds);
+		lastFrame = nanos;
+		frameLead = Math.min(MAX_FRAME_LEAD, frameSeconds);
+		if (source != 0) {
+			readClock(nanos, frameSeconds);
+		}
 		double now = source == 0 ? Double.MAX_VALUE : played();
 		double audioBeat = source == 0 || paused ? -1 : BeatTracker.beatAt(beats, now);
 		audioBeatNow = audioBeat;
-		beatRaw = source == 0 ? -1 : BeatTracker.beatAt(beats, now - offset);
+		beatRaw = source == 0 ? -1 : BeatTracker.beatAt(beats, visualTime(now));
 		ramp();
-		long nanos = System.nanoTime();
-		float elapsed = Math.min(0.1f, (nanos - lastFrame) / 1e9f);
-		lastFrame = nanos;
 		motion += (motionNow - motion) * (1 - (float) Math.exp(-elapsed / 0.3f));
 		float loudness = beatNow < 0 || energy.length == 0 ? 0 : energy[Mth.clamp((int) beatNow, 0, energy.length - 1)];
 		energyNow += (loudness - energyNow) * (1 - (float) Math.exp(-elapsed / (loudness > energyNow ? 0.08f : 0.5f)));
@@ -1113,7 +1134,8 @@ public final class MineAtDisco implements ClientModInitializer {
 		if (source == 0 || paused || beats.length < 2) {
 			return;
 		}
-		double now = played();
+		// The player taps to what they hear, which the speakers play a device latency after the mixer.
+		double now = played() - latency;
 		double raw = BeatTracker.beatAt(beats, now);
 		int index = Mth.clamp((int) Math.round(raw < 0 ? 0 : raw), 0, beats.length - 1);
 		double period = index + 1 < beats.length ? beats[index + 1] - beats[index] : beats[index] - beats[index - 1];
@@ -1187,7 +1209,11 @@ public final class MineAtDisco implements ClientModInitializer {
 		energy = song.energy();
 		drops = BeatTracker.drops(energy);
 		paused = false;
-		anchor = Double.NEGATIVE_INFINITY;
+		clock.reset();
+		playedAt = 0;
+		playedNanos = System.nanoTime();
+		latencyReported = AL.getCapabilities().AL_SOFT_source_latency;
+		latency = 0;
 	}
 
 	/**
@@ -1255,22 +1281,39 @@ public final class MineAtDisco implements ClientModInitializer {
 			} else {
 				AL10.alSourcePlay(source);
 			}
-			anchor = Double.NEGATIVE_INFINITY;
+			clock.reset();
 		}
 	}
 
-	/** Audio position in seconds. */
-	private static double played() {
-		double played = AL10.alGetSourcei(source, AL11.AL_SAMPLE_OFFSET) / (double) sampleRate;
-		if (!paused) {
-			// OpenAL moves the offset once per mixer period, about 20 ms, so every reading is slightly stale.
-			// The freshest reading so far gives the true position, and the system clock fills in between readings.
-			// ponytail: the two clocks drift apart by a few ms over a song. Re-anchor now and then if timing gets tight.
-			double now = System.nanoTime() / 1e9;
-			anchor = Math.max(anchor, played - now);
-			played = now + anchor;
+	/** Reads the mixer position and the output latency from OpenAL once per frame and smooths the position. */
+	private static void readClock(long nanos, double frameSeconds) {
+		double reading;
+		if (latencyReported) {
+			SOFTSourceLatency.alGetSourcedvSOFT(source, SOFTSourceLatency.AL_SEC_OFFSET_LATENCY_SOFT, offsetAndLatency);
+			reading = offsetAndLatency[0];
+			latency = offsetAndLatency[1];
+		} else {
+			reading = AL10.alGetSourcei(source, AL11.AL_SAMPLE_OFFSET) / (double) sampleRate;
 		}
-		return played;
+		playedAt = paused ? reading : clock.update(reading, frameSeconds);
+		playedNanos = nanos;
+	}
+
+	/**
+	 * Mixer position of the song in seconds, smoothed, see AudioClock. Sounds the mod plays share the song's latency,
+	 * so they follow this time directly. Between frames it moves on with the system clock.
+	 */
+	private static double played() {
+		return paused ? playedAt : playedAt + Math.min(0.1, (System.nanoTime() - playedNanos) / 1e9);
+	}
+
+	/**
+	 * Song time the screen should show now. The speakers play the mixer's output a device latency later, a frame drawn
+	 * now reaches the screen about a frame later (lazer's beat-synced early activation does the same job), and the
+	 * player's offset covers delay OpenAL can't see.
+	 */
+	private static double visualTime(double played) {
+		return played - latency + frameLead - offset;
 	}
 
 	/**
@@ -1453,8 +1496,9 @@ public final class MineAtDisco implements ClientModInitializer {
 					? Component.translatable("mineatdisco.playing", currentSong, Math.round(BeatTracker.bpm(beats)))
 					: Component.translatable("mineatdisco.menu.idle");
 			gui.centeredText(font, status, cx, 11, 0xFFFFFFFF);
-			gui.centeredText(font, Component.translatable("mineatdisco.menu.offset", Math.round(offset * 1000)),
-					cx, 23, 0xFFFFD040);
+			gui.centeredText(font, latencyReported
+					? Component.translatable("mineatdisco.menu.offset_latency", Math.round(offset * 1000), Math.round(latency * 1000))
+					: Component.translatable("mineatdisco.menu.offset", Math.round(offset * 1000)), cx, 23, 0xFFFFD040);
 			if (list.isEmpty()) {
 				gui.centeredText(font, Component.translatable("mineatdisco.menu.empty", SONGS.toString()),
 						cx, height / 2 + 44, 0xFFCCCCCC);

@@ -12,6 +12,7 @@
 	"mineatdisco.menu.title": "Mine at Disco",
 	"mineatdisco.menu.idle": "No song playing",
 	"mineatdisco.menu.offset": "Offset: %s ms",
+	"mineatdisco.menu.offset_latency": "Offset: %s ms, device latency: %s ms",
 	"mineatdisco.menu.half": "/2",
 	"mineatdisco.menu.double": "x2",
 	"mineatdisco.menu.earlier": "-10 ms",
