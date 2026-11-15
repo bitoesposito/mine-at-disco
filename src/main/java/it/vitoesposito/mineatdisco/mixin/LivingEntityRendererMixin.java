@@ -14,25 +14,26 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Makes every mob and player dance like a plushie, all in sync: flat and wide on the beat, tall and thin between
- * beats, swaying their hips and nodding. Every move follows a cosine, so nothing snaps.
+ * Makes every mob and player dance like a plushie, all in sync: one hop every two beats that lands on beats 1 and 3,
+ * squashing on the landing and stretching at the top, while the hips sway once per bar. Every move follows a cosine,
+ * so nothing snaps.
  */
 @Mixin(LivingEntityRenderer.class)
 public abstract class LivingEntityRendererMixin {
 	private static final String SUBMIT = "submit(Lnet/minecraft/client/renderer/entity/state/LivingEntityRenderState;"
 			+ "Lcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/SubmitNodeCollector;"
 			+ "Lnet/minecraft/client/renderer/state/level/CameraRenderState;)V";
-	/** Height between beats over normal height. On the beat the mob is as much shorter. */
-	private static final float STRETCH = 1.8f;
-	/** Share of its height a mob jumps at full stretch. */
+	/** Height at the top of the hop over normal height. On landing the mob is as much shorter. */
+	private static final float STRETCH = 1.19f;
+	/** Share of its height a mob jumps. */
 	private static final float HOP = 0.1f;
-	private static final float NOD_DEGREES = 25;
-	private static final float LEAN_DEGREES = 20;
-	private static final float TWIST_DEGREES = 15;
+	private static final float NOD_DEGREES = 7.5f;
+	private static final float LEAN_DEGREES = 6;
+	private static final float TWIST_DEGREES = 4.5f;
 
-	/** 1 on the beat, -1 halfway to the next. */
+	/** 1 when landing on beats 1 and 3, -1 at the top of the hop on beats 2 and 4. */
 	private static float bounce(double beat) {
-		return (float) Math.cos(2 * Math.PI * beat);
+		return (float) Math.cos(Math.PI * beat);
 	}
 
 	@Inject(
@@ -63,8 +64,8 @@ public abstract class LivingEntityRendererMixin {
 		pose.scale(width, height, width);
 	}
 
-	// After the body turns to face its way, Z points forward. The sway takes two beats: lean left, then right,
-	// with a twist that runs a quarter turn ahead, so the hips draw a figure eight.
+	// After the body turns to face its way, Z points forward. The sway takes a bar: lean one way on beat 1, the other
+	// on beat 3, with a twist that runs a quarter turn ahead, so the hips draw a figure eight.
 	@Inject(
 			method = SUBMIT,
 			at = @At(
@@ -75,8 +76,8 @@ public abstract class LivingEntityRendererMixin {
 			CameraRenderState camera, CallbackInfo info) {
 		double beat = MineAtDisco.beat();
 		if (beat >= 0) {
-			pose.rotateDegrees(Axis.YP, TWIST_DEGREES * (float) Math.sin(Math.PI * beat));
-			pose.rotateDegrees(Axis.ZP, LEAN_DEGREES * (float) Math.cos(Math.PI * beat));
+			pose.rotateDegrees(Axis.YP, TWIST_DEGREES * (float) Math.sin(Math.PI * beat / 2));
+			pose.rotateDegrees(Axis.ZP, LEAN_DEGREES * (float) Math.cos(Math.PI * beat / 2));
 		}
 	}
 }
