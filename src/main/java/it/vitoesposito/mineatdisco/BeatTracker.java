@@ -7,9 +7,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 
-/** Finds the beats of a song: onset envelope, tempo by autocorrelation, then dynamic programming (Ellis, 2007). */
+/**
+ * Finds the beats of a song: onset envelope, tempo by autocorrelation, then dynamic programming (Ellis, 2007).
+ * The first beat returned opens a phrase, so beat i sits at position i % 4 of its bar and i % PHRASE of its phrase.
+ */
 public final class BeatTracker {
+	public static final int PHRASE = 8;
 	private static final int FPS = 200;
+	private static final double BASS_HZ = 150;
 	/** How strongly the tracker holds the tempo against a louder onset nearby. */
 	private static final double TIGHTNESS = 400;
 
@@ -27,11 +32,23 @@ public final class BeatTracker {
 		}
 
 		double[] loudness = new double[frames];
+		double[] bass = new double[frames];
 		double peak = 0;
+		// Two one-pole low-pass filters in a row keep the kick and the bass line.
+		double smoothing = 1 - Math.exp(-2 * Math.PI * BASS_HZ / sampleRate);
+		double low1 = 0;
+		double low2 = 0;
 		for (int f = 0; f < frames; f++) {
 			long sum = 0;
-			for (int i = f * hop, end = i + hop; i < end; i++) {
-				sum += Math.abs(pcm.get(pcm.position() + i));
+			for (int i = f * hop, end = i + hop; i < end; i += channels) {
+				int sample = 0;
+				for (int c = 0; c < channels; c++) {
+					sample += pcm.get(pcm.position() + i + c);
+				}
+				sum += Math.abs(sample);
+				low1 += smoothing * (sample - low1);
+				low2 += smoothing * (low1 - low2);
+				bass[f] += Math.abs(low2);
 			}
 			loudness[f] = Math.log1p((double) sum / hop);
 			peak = Math.max(peak, loudness[f]);
@@ -105,9 +122,31 @@ public final class BeatTracker {
 		for (int t = last; t >= 0; t = back[t]) {
 			count++;
 		}
-		double[] beats = new double[count];
+		int[] beatFrames = new int[count];
 		for (int t = last; t >= 0; t = back[t]) {
-			beats[--count] = t / fps;
+			beatFrames[--count] = t;
+		}
+
+		// A phrase opens on its heaviest beat: bands land their accents and re-entries there.
+		// ponytail: assumes 4/4 and phrases that never shift. Track the phase per section if a song breaks that.
+		double[] weight = new double[PHRASE];
+		for (int i = 0; i < beatFrames.length; i++) {
+			for (int f = beatFrames[i], stop = Math.min(frames, f + (int) (period / 2)); f < stop; f++) {
+				weight[i % PHRASE] += bass[f];
+			}
+		}
+		int first = 0;
+		for (int k = 1; k < PHRASE; k++) {
+			if (weight[k] > weight[first]) {
+				first = k;
+			}
+		}
+		if (beatFrames.length < 2 * PHRASE) {
+			first = 0;
+		}
+		double[] beats = new double[beatFrames.length - first];
+		for (int i = 0; i < beats.length; i++) {
+			beats[i] = beatFrames[i + first] / fps;
 		}
 		return beats;
 	}
@@ -159,17 +198,24 @@ public final class BeatTracker {
 			return;
 		}
 
-		// A 128 BPM click track with two seconds of silence at the end.
+		// A 128 BPM click track with two seconds of silence at the end. A kick opens each phrase, from the fourth click.
 		int rate = 44100;
 		double interval = 60.0 / 128;
 		double firstClick = 0.2;
+		double firstKick = firstClick + 3 * interval;
 		short[] pcm = new short[rate * 30];
-		for (double t = firstClick; t < 28; t += interval) {
+		for (int click = 0; firstClick + click * interval < 28; click++) {
+			int start = (int) ((firstClick + click * interval) * rate);
 			for (int i = 0; i < 400; i++) {
-				pcm[(int) (t * rate) + i] = (short) (20000 * Math.sin(i * 0.3));
+				pcm[start + i] = (short) (15000 * Math.sin(i * 0.3));
+			}
+			for (int i = 0; click % PHRASE == 3 && i < 8000; i++) {
+				pcm[start + i] += (short) (15000 * Math.sin(i * 2 * Math.PI * 60 / rate));
 			}
 		}
 		double[] beats = track(ShortBuffer.wrap(pcm), 1, rate);
+		double sinceKick = (beats[0] - firstKick) % (PHRASE * interval);
+		check(Math.abs(sinceKick) < 0.015, "first beat at " + beats[0] + " does not open a phrase");
 		check(Math.abs(bpm(beats) - 128) < 0.5, "tempo was " + bpm(beats));
 		check(beats[beats.length - 1] < 28, "beats ran into the silence");
 		for (double beat : beats) {
