@@ -19,7 +19,7 @@ public abstract class SoundEngineMixin {
 
 	@Inject(method = "play", at = @At("HEAD"), cancellable = true)
 	private void mineatdisco$defer(SoundInstance sound, CallbackInfoReturnable<SoundEngine.PlayResult> result) {
-		if (MineAtDisco.defer(sound)) {
+		if (MineAtDisco.defer(sound, this::play)) {
 			result.setReturnValue(SoundEngine.PlayResult.STARTED);
 		}
 	}
@@ -27,6 +27,6 @@ public abstract class SoundEngineMixin {
 	// The game calls updateSource once per frame.
 	@Inject(method = "updateSource", at = @At("HEAD"))
 	private void mineatdisco$frame(Camera camera, CallbackInfo info) {
-		MineAtDisco.frame(this::play);
+		MineAtDisco.frame();
 	}
 }

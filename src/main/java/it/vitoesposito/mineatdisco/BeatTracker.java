@@ -151,6 +151,33 @@ public final class BeatTracker {
 		return beats;
 	}
 
+	/** Returns how loud each beat is next to the rest of the song: 0 up to the quietest tenth, 1 from the loudest twentieth. */
+	public static float[] energy(ShortBuffer pcm, int channels, int sampleRate, double[] beats) {
+		float[] energy = new float[beats.length];
+		if (beats.length < 2) {
+			Arrays.fill(energy, 1);
+			return energy;
+		}
+		for (int i = 0; i < beats.length - 1; i++) {
+			int from = (int) (beats[i] * sampleRate) * channels;
+			int to = Math.min(pcm.remaining(), (int) (beats[i + 1] * sampleRate) * channels);
+			long sum = 0;
+			for (int s = from; s < to; s++) {
+				sum += Math.abs(pcm.get(pcm.position() + s));
+			}
+			energy[i] = (float) sum / Math.max(1, to - from);
+		}
+		energy[beats.length - 1] = energy[beats.length - 2];
+		float[] sorted = energy.clone();
+		Arrays.sort(sorted);
+		float quiet = sorted[sorted.length / 10];
+		float loud = sorted[sorted.length * 19 / 20];
+		for (int i = 0; i < energy.length; i++) {
+			energy[i] = loud > quiet ? Math.clamp((energy[i] - quiet) / (loud - quiet), 0, 1) : 1;
+		}
+		return energy;
+	}
+
 	/** Returns the beat index plus the phase within that beat, or -1 outside the tracked beats. */
 	public static double beatAt(double[] beats, double seconds) {
 		int i = Arrays.binarySearch(beats, seconds);
@@ -226,6 +253,19 @@ public final class BeatTracker {
 		check(Math.abs(beatAt(beats, (beats[3] + beats[4]) / 2) - 3.5) < 1e-9, "halfway through beat 3");
 		check(Math.abs(timeAt(beats, 3.5) - (beats[3] + beats[4]) / 2) < 1e-9, "time of beat 3.5");
 		check(timeAt(beats, beats.length - 1) == beats[beats.length - 1], "time of the last beat");
+
+		// Quiet for ten seconds, then loud, with a beat every half second.
+		short[] wave = new short[rate * 20];
+		for (int i = 0; i < wave.length; i++) {
+			wave[i] = (short) ((i < wave.length / 2 ? 3000 : 20000) * Math.sin(i * 0.05));
+		}
+		double[] grid = new double[40];
+		for (int i = 0; i < grid.length; i++) {
+			grid[i] = i * 0.5;
+		}
+		float[] loudness = energy(ShortBuffer.wrap(wave), 1, rate, grid);
+		check(loudness[2] < 0.01 && loudness[19] < 0.01, "quiet half should be near 0");
+		check(loudness[20] > 0.99 && loudness[39] > 0.99, "loud half should be near 1");
 		System.out.println("ok: " + beats.length + " beats at " + bpm(beats) + " BPM");
 	}
 

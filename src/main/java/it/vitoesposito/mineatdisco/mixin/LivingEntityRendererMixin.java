@@ -16,7 +16,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 /**
  * Makes every mob and player dance like a plushie, all in sync: one hop every two beats that lands on beats 1 and 3,
  * squashing on the landing and stretching at the top, while the hips sway once per bar. Every move follows a cosine,
- * so nothing snaps.
+ * so nothing snaps, and grows with the loudness of the song.
  */
 @Mixin(LivingEntityRenderer.class)
 public abstract class LivingEntityRendererMixin {
@@ -42,7 +42,7 @@ public abstract class LivingEntityRendererMixin {
 	private void mineatdisco$nod(LivingEntity entity, LivingEntityRenderState state, float partialTick, CallbackInfo info) {
 		double beat = MineAtDisco.beat();
 		if (beat >= 0) {
-			state.xRot += NOD_DEGREES * (0.5f + 0.5f * bounce(beat));
+			state.xRot += NOD_DEGREES * MineAtDisco.drive() * (0.5f + 0.5f * bounce(beat));
 		}
 	}
 
@@ -57,10 +57,11 @@ public abstract class LivingEntityRendererMixin {
 			return;
 		}
 		float bounce = bounce(beat);
-		float height = (float) Math.pow(STRETCH, -bounce);
+		float drive = MineAtDisco.drive();
+		float height = (float) Math.pow(STRETCH, -bounce * drive);
 		// Width shrinks as height grows, so the mob keeps its volume like a squeezed plushie.
 		float width = 1 / (float) Math.sqrt(height);
-		pose.translate(0, HOP * state.boundingBoxHeight * (1 - bounce) / 2, 0);
+		pose.translate(0, HOP * drive * state.boundingBoxHeight * (1 - bounce) / 2, 0);
 		pose.scale(width, height, width);
 	}
 
@@ -76,8 +77,9 @@ public abstract class LivingEntityRendererMixin {
 			CameraRenderState camera, CallbackInfo info) {
 		double beat = MineAtDisco.beat();
 		if (beat >= 0) {
-			pose.rotateDegrees(Axis.YP, TWIST_DEGREES * (float) Math.sin(Math.PI * beat / 2));
-			pose.rotateDegrees(Axis.ZP, LEAN_DEGREES * (float) Math.cos(Math.PI * beat / 2));
+			float drive = MineAtDisco.drive();
+			pose.rotateDegrees(Axis.YP, TWIST_DEGREES * drive * (float) Math.sin(Math.PI * beat / 2));
+			pose.rotateDegrees(Axis.ZP, LEAN_DEGREES * drive * (float) Math.cos(Math.PI * beat / 2));
 		}
 	}
 }

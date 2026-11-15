@@ -9,7 +9,7 @@ import org.spongepowered.asm.mixin.injection.At;
 /** Breathes the camera in and out with the bar. */
 @Mixin(Camera.class)
 public abstract class CameraMixin {
-	private static final float ZOOM = 0.08f;
+	private static final float ZOOM = 0.12f;
 
 	@ModifyReturnValue(method = "calculateFov", at = @At("RETURN"))
 	private float mineatdisco$breathe(float fov) {
@@ -17,9 +17,9 @@ public abstract class CameraMixin {
 		if (beat < 0) {
 			return fov;
 		}
-		// A cosine over two beats, closest on beats 1 and 3. A sudden zoom on a still view causes headaches,
-		// so the curve has no steps and fades out when the player stops moving.
+		// A cosine over two beats, closest on beats 1 and 3. Squaring it sharpens the peak without adding a step:
+		// a sudden zoom on a still view causes headaches, so the curve stays smooth and fades out when the player stops.
 		float breath = 0.5f + 0.5f * (float) Math.cos(Math.PI * beat);
-		return fov * (1 - ZOOM * MineAtDisco.motion() * breath);
+		return fov * (1 - ZOOM * MineAtDisco.motion() * MineAtDisco.drive() * breath * breath);
 	}
 }
