@@ -42,6 +42,7 @@ Tuning the owner asked for, in order:
 24. Music following borrows from osu! (ppy/osu, ppy/osu-framework): the interpolating audio clock with drift recovery, measured device latency instead of a fixed platform offset, and drawing one frame ahead.
 25. Calibration works like lazer's. Tapping skips two warm-up taps and takes the median of the last 16, so a stray tap moves nothing. Hits and used blocks within a quarter beat of a beat are logged, and after 16 of them the menu suggests the offset that centers them, with an Apply button, like lazer's suggested offset from hit errors.
 26. Visuals follow the drums the song really plays. `BeatTracker.punch` precomputes, 100 times a second, how fast the bass level climbs (a kick, not the sustained bass line that sits on merengue's off-beats), with the rise and fall of lazer's logo visualiser. The HUD bounce reads it on the ramped visual time, the bracket ring brightens with it, and the camera kick scales by the punch of the beat that opens its cycle.
+27. The beat tracker also weighs how fast the bass climbs, so beats sit on the kicks and tracking starts when the band does instead of in a beatless intro. A mining knock or a bite noticed more than two 60 fps frames late, after a hitch, is skipped instead of played off the beat, like lazer's mistimed allowance.
 
 ## Code map
 
