@@ -63,6 +63,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.BowItem;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
@@ -90,6 +91,8 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static final float FLASH_BEATS = 0.6f;
 	private static final int GOLD = 0xFFD040;
 	private static final int WHITE = 0xFFFFFF;
+	/** Bracket color for a beat on which the player's next full-strength hit will be ready. */
+	private static final int READY = 0xFF5A3C;
 	private static final Set<SoundSource> WORLD_SOUNDS =
 			EnumSet.of(SoundSource.BLOCKS, SoundSource.PLAYERS, SoundSource.HOSTILE, SoundSource.NEUTRAL);
 	/** Seconds mining counts as going on after the game last reported a hit on the block. */
@@ -142,6 +145,8 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static double flashBeat = Double.NEGATIVE_INFINITY;
 	private static float flashStrength;
 	private static int flashColor = WHITE;
+	/** System time in seconds of the player's last attack: the ready cue only shows during a fight. */
+	private static double lastAttackAt = Double.NEGATIVE_INFINITY;
 	/**
 	 * Whether this game runs the world itself, and whether it runs it alone (not open to LAN). Timing changes need the
 	 * first, changes to mobs the second. On a server the mod only moves visuals and sounds, which anticheats ignore.
@@ -410,6 +415,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 		double beat = audioBeatNow;
 		boolean onBeat = beat >= 0 && Math.abs(beat - Math.round(beat)) <= BEAT_WINDOW;
+		lastAttackAt = System.nanoTime() / 1e9;
 		int id = target.getId();
 		double due = nextLine(2);
 		if (onBeat) {
@@ -1210,7 +1216,8 @@ public final class MineAtDisco implements ClientModInitializer {
 
 		// Squaring the phase makes the brackets start slow and rush into the beat.
 		float radius = 5 + 14 * (1 - phase * phase);
-		int bracketColor = argb(presence * (0.25f + 0.75f * phase), flashing ? flashColor : bar == 3 ? GOLD : WHITE);
+		int bracketColor = argb(presence * (0.25f + 0.75f * phase),
+				flashing ? flashColor : readyOnNextBeat() ? READY : bar == 3 ? GOLD : WHITE);
 		for (int corner = 0; corner < 4; corner++) {
 			int sx = corner % 2 == 0 ? -1 : 1;
 			int sy = corner < 2 ? -1 : 1;
@@ -1243,6 +1250,26 @@ public final class MineAtDisco implements ClientModInitializer {
 			gui.fill(0, 0, Math.round(3 + 3 * flashStrength), 1, argb((1 - flash) * (1 - flash) * flashStrength, flashColor));
 			gui.pose().popMatrix();
 		}
+	}
+
+	/**
+	 * True when the player's next full-strength hit will be ready by the next beat: a bow fully drawn, or, during a
+	 * fight, a swing fully recharged. The brackets turn red for that beat, so full hits land in time.
+	 */
+	private static boolean readyOnNextBeat() {
+		LocalPlayer player = Minecraft.getInstance().player;
+		if (player == null || beatRaw < 0) {
+			return false;
+		}
+		double ticksToBeat = 20 * (BeatTracker.timeAt(beats, Math.floor(beatRaw) + 1) - BeatTracker.timeAt(beats, beatRaw));
+		if (player.isUsingItem() && player.getUseItem().getItem() instanceof BowItem) {
+			return player.getTicksUsingItem() + ticksToBeat >= BowItem.MAX_DRAW_DURATION;
+		}
+		if (System.nanoTime() / 1e9 - lastAttackAt > 2) {
+			return false;
+		}
+		float delay = player.getCurrentItemAttackStrengthDelay();
+		return player.getAttackStrengthScale(0) * delay + ticksToBeat >= delay;
 	}
 
 	/** An L-shaped bracket with its corner at (x, y) and its arms pointing back toward the crosshair. */
