@@ -125,8 +125,6 @@ public final class MineAtDisco implements ClientModInitializer {
 			EnumSet.of(SoundSource.BLOCKS, SoundSource.PLAYERS, SoundSource.HOSTILE, SoundSource.NEUTRAL);
 	/** Seconds mining counts as going on after the game last reported a hit on the block. */
 	private static final double MINING_GRACE = 0.3;
-	/** Beats the first block of a mining run may wait past vanilla's break time to land on a beat. */
-	private static final double FIRST_BLOCK_WAIT = 0.25;
 	/** Chips per mining hit on the first beat of the bar at full loudness. */
 	private static final int CHIPS = 10;
 	/** Distance in beats from the nearest beat within which a player attack counts as on-beat. */
@@ -207,10 +205,14 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static Direction miningSide;
 	private static double miningSeen = Double.NEGATIVE_INFINITY;
 	private static BlockPos crackPos;
-	private static double crackStartBeat = Double.NaN;
-	private static double targetBeat = Double.NaN;
+	/**
+	 * Song time when the cracks started, when the block will break (NaN leaves it to vanilla) and when the last block
+	 * broke. Seconds, not beat numbers: live mode drops old beats and /2 halves the numbering, and a stale beat number
+	 * could push a break minutes away. stop() clears them, since every song starts its clock at zero.
+	 */
+	private static double crackStartTime = Double.NaN;
+	private static double targetTime = Double.NaN;
 	private static double lastBreakTime = Double.NEGATIVE_INFINITY;
-	private static double lastBreakBeat = Double.NEGATIVE_INFINITY;
 	/** How much the player moves or looks around, 0 to 1. The raw value steps per tick, the eased one per frame. */
 	private static float motionNow;
 	private static float motion;
@@ -680,30 +682,15 @@ public final class MineAtDisco implements ClientModInitializer {
 		miningSide = side;
 		miningSeen = now;
 		crackPos = miningPos;
-		boolean chained = now - lastBreakTime < 0.25;
-		crackStartBeat = chained ? lastBreakBeat : (beatRaw >= 0 ? beatRaw : audioBeat);
-		// Never break before vanilla would. The server takes a break once its own count reaches 70%, but client and
-		// server ticks drift apart by a tick or two, and a break that comes too early gets the block put back.
-		double earliest = BeatTracker.beatAt(beats, now + breakTicks(step) / 20.0);
-		double idealBeat = BeatTracker.beatAt(beats, now + (breakTicks(step) + 5) / 20.0);
-		if (earliest < 0 || idealBeat < 0) {
-			crackPos = null;
-			targetBeat = Double.NaN;
-			return;
-		}
-		if (!chained) {
-			// Holding a block past vanilla's time feels like the pickaxe stopped working, and the player moves on before
-			// it breaks. So the first block only waits for a beat a quarter beat away; its burst still lands on the grid.
-			double next = Math.ceil(earliest);
-			targetBeat = next - earliest <= FIRST_BLOCK_WAIT ? next : Double.NaN;
-			return;
-		}
-		double minBeat = Math.max(Math.ceil(earliest), Math.floor(lastBreakBeat) + 1);
-		targetBeat = Math.max(minBeat, BeatTracker.landing(idealBeat, idealBeat - audioBeat));
+		crackStartTime = Math.abs(now - lastBreakTime) < BeatTracker.RUN_GAP ? lastBreakTime : visualTime(now);
+		// Holding a block past vanilla's time feels like the pickaxe stopped working, and the player moves on before it
+		// breaks, so a first block mostly breaks on vanilla time, its burst still on the grid. Breaking before vanilla
+		// gets the block put back: the server needs 70% of its own count, and client and server ticks drift apart.
+		targetTime = BeatTracker.breakTime(beats, now, breakTicks(step), lastBreakTime);
 	}
 
 	/**
-	 * Paces block breaking so the crack stages follow the velocity ramp and the block breaks on {@code targetBeat}.
+	 * Paces block breaking so the crack stages follow the velocity ramp and the block breaks at {@code targetTime}.
 	 * Never breaks before vanilla would, so the server always accepts the break.
 	 */
 	public static float paceMining(BlockPos pos, Direction side, float vanillaProgress, float ticks) {
@@ -714,11 +701,10 @@ public final class MineAtDisco implements ClientModInitializer {
 		if (!pos.equals(crackPos)) {
 			startMining(pos, side);
 		}
-		if (crackPos == null || Double.isNaN(targetBeat) || targetBeat < 0) {
+		if (crackPos == null || Double.isNaN(targetTime)) {
 			if (crackPos != null && vanillaProgress >= 1) {
 				// A block left to vanilla breaks this tick. Note it, so the next one in the run locks onto the beat.
 				lastBreakTime = played();
-				lastBreakBeat = BeatTracker.beatAt(beats, lastBreakTime);
 				crackPos = null;
 			}
 			return vanillaProgress;
@@ -736,21 +722,18 @@ public final class MineAtDisco implements ClientModInitializer {
 		miningPos = crackPos;
 		miningSide = side;
 		miningSeen = now;
-		double due = BeatTracker.timeAt(beats, targetBeat);
 		boolean serverReady = ticks >= breakTicks(step);
-		if (now + 0.025 >= due && !serverReady) {
+		if (now + 0.025 >= targetTime && !serverReady) {
 			double left = (breakTicks(step) - ticks) / 20.0;
 			double nextBeat = Math.ceil(BeatTracker.beatAt(beats, now + Math.max(0.05, left)));
 			if (nextBeat < 0) {
 				crackPos = null;
 				return vanillaProgress;
 			}
-			targetBeat = nextBeat;
-			due = BeatTracker.timeAt(beats, targetBeat);
+			targetTime = BeatTracker.timeAt(beats, nextBeat);
 		}
-		if (now + 0.025 >= due && serverReady) {
-			lastBreakTime = now;
-			lastBreakBeat = targetBeat;
+		if (now + 0.025 >= targetTime && serverReady) {
+			lastBreakTime = targetTime;
 			crackPos = null;
 			return 1.0f;
 		}
@@ -766,9 +749,10 @@ public final class MineAtDisco implements ClientModInitializer {
 		crackPos = null;
 	}
 
+	/** Crack stage between 0 and 1 on the ramped visual time, so the cracks linger and whip with the beat. */
 	private static float crackProgress() {
-		double span = Math.max(0.1, targetBeat - crackStartBeat);
-		return Mth.clamp((float) ((beatNow - crackStartBeat) / span), 0.001f, 0.99f);
+		double span = Math.max(0.03, targetTime - crackStartTime);
+		return Mth.clamp((float) ((rampedSeconds - crackStartTime) / span), 0.001f, 0.99f);
 	}
 
 	/** Moves the burst of a broken block to the next eighth note and makes it bigger. Returns true to skip vanilla. */
@@ -859,7 +843,7 @@ public final class MineAtDisco implements ClientModInitializer {
 				chip(visualEighth);
 			}
 		}
-		if (crackPos != null && beatNow >= 0 && !Double.isNaN(targetBeat)) {
+		if (crackPos != null && beatNow >= 0 && !Double.isNaN(targetTime)) {
 			Minecraft client = Minecraft.getInstance();
 			if (client.level != null && client.player != null && client.gameMode != null
 					&& client.gameMode.isDestroying() && !client.level.getBlockState(crackPos).isAir()) {
@@ -1414,7 +1398,16 @@ public final class MineAtDisco implements ClientModInitializer {
 		punch = new float[0];
 		audioBeatNow = -1;
 		telegraphedMobs.clear();
+		// Every song starts its clock at zero, so times from the last one would read as the future.
 		crackPos = null;
+		targetTime = Double.NaN;
+		lastBreakTime = Double.NEGATIVE_INFINITY;
+		miningSeen = Double.NEGATIVE_INFINITY;
+		lastTapAt = Double.NEGATIVE_INFINITY;
+		taps.clear();
+		lastBeat = -1;
+		lastEighth = -1;
+		lastVisualEighth = -1;
 	}
 
 	private static void tick(Minecraft client) {

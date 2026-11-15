@@ -13,6 +13,10 @@ import java.util.Arrays;
  */
 public final class BeatTracker {
 	public static final int PHRASE = 8;
+	/** Beats the first block of a mining run may wait past vanilla's break time to land on a beat. */
+	private static final double FIRST_BLOCK_WAIT = 0.25;
+	/** Seconds between one break and the next block's start that still count as one mining run. */
+	static final double RUN_GAP = 0.25;
 	/** Readings per second in a punch curve, see punch. */
 	public static final int PUNCH_RATE = 100;
 	/** How fast a punch falls back, per second. lazer's logo visualiser uses 2.4; bounces want to settle within a beat. */
@@ -322,6 +326,29 @@ public final class BeatTracker {
 		return best;
 	}
 
+	/**
+	 * When a block should break, in song seconds, or NaN to leave it to vanilla. {@code ticks} is vanilla's time for the
+	 * block and {@code lastBreak} when the previous block broke. A block started right after a break continues a run:
+	 * vanilla's 5-tick pause between blocks folds into its time and it lands on a beat near vanilla's pace, drifting
+	 * toward strong beats (see landing). The first block of a run only waits for a beat a quarter beat away. Nothing
+	 * breaks before vanilla would, which the server needs.
+	 */
+	public static double breakTime(double[] beats, double now, int ticks, double lastBreak) {
+		double heard = beatAt(beats, now);
+		double earliest = beatAt(beats, now + ticks / 20.0);
+		double ideal = beatAt(beats, now + (ticks + 5) / 20.0);
+		if (heard < 0 || earliest < 0 || ideal < 0) {
+			return Double.NaN;
+		}
+		// abs(): a break from another song's clock may lie in the future, and must not count as this run.
+		if (Math.abs(now - lastBreak) >= RUN_GAP) {
+			double next = Math.ceil(earliest);
+			return next - earliest <= FIRST_BLOCK_WAIT ? timeAt(beats, next) : Double.NaN;
+		}
+		double first = Math.max(Math.ceil(earliest), Math.floor(beatAt(beats, lastBreak)) + 1);
+		return timeAt(beats, Math.max(first, landing(ideal, ideal - heard)));
+	}
+
 	public static double bpm(double[] beats) {
 		return beats.length < 2 ? 0 : 60 * (beats.length - 1) / (beats[beats.length - 1] - beats[0]);
 	}
@@ -416,6 +443,12 @@ public final class BeatTracker {
 		for (int i = 0; i < song.length; i++) {
 			check(drops[i] == (i == 40), "drop at beat " + i + " should be " + (i == 40));
 		}
+
+		// Diamond pickaxe on stone (6 ticks) with a beat every half second.
+		check(breakTime(grid, 3.1, 6, Double.NEGATIVE_INFINITY) == 3.5, "a first block waits for a beat a quarter beat away");
+		check(Double.isNaN(breakTime(grid, 3.0, 6, Double.NEGATIVE_INFINITY)), "a first block breaks on vanilla time otherwise");
+		check(breakTime(grid, 3.55, 6, 3.5) == 4.0, "a block right after a break continues the run on the next beat");
+		check(Double.isNaN(breakTime(grid, 9.0, 6, 150)), "a break from the last song's clock doesn't hold the block");
 
 		check(landing(5.6, 1) == 5 && landing(5.8, 1) == 6, "a short action waits at most a quarter beat");
 		check(landing(1.57, 1.57) == 1, "diamond pickaxe on stone keeps one block per beat");
