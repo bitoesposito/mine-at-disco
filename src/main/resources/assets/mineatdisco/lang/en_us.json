@@ -1,6 +1,7 @@
 {
 	"mineatdisco.loading": "Finding the beat in %s...",
 	"mineatdisco.playing": "Playing %s at %s BPM",
+	"mineatdisco.muted": "Music or Master volume is at 0%%, so the song is silent. Raise it in the sound options",
 	"mineatdisco.stopped": "Music stopped",
 	"mineatdisco.not_found": "No song named %s. Put .ogg files in %s",
 	"mineatdisco.failed": "Could not load %s. It must be an Ogg Vorbis file in mono or stereo",

@@ -185,6 +185,9 @@ public final class MineAtDisco implements ClientModInitializer {
 				float volume = command.getClient().options.getFinalSoundSourceVolume(SoundSource.MUSIC);
 				start(song, volume);
 				command.sendFeedback(Component.translatable("mineatdisco.playing", name, Math.round(BeatTracker.bpm(beats))));
+				if (volume == 0) {
+					command.sendError(Component.translatable("mineatdisco.muted"));
+				}
 			}
 		}, command.getClient());
 		return 1;
