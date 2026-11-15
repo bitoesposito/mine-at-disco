@@ -224,6 +224,11 @@ public final class MineAtDisco implements ClientModInitializer {
 		return particleSpeed;
 	}
 
+	/** Visual beat without the ramp. The camera and impact effects use it, since bending them reads as lag. */
+	public static double beatSteady() {
+		return beatRaw;
+	}
+
 	/** Ticks the visuals run behind real time during a ramp, 0 outside one. Entity animations subtract it. */
 	public static float lagTicks() {
 		return lagTicks;
