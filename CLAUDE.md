@@ -38,6 +38,7 @@ Tuning the owner asked for, in order:
 20. Drops: `BeatTracker.drops` marks the bars where the band comes back after a quiet stretch. There a rainbow ring rolls out from the player, fireworks go up around them, the trees let go and the HUD answers.
 21. Kills land on the beat: a mob's hurt flash stays on the eighth note, its death waits for the next beat and pops with sparks and a HUD answer.
 22. Eating and throwing follow the song. While the player eats or drinks, vanilla's 4-tick chewing timer is off and the mod bites on every eighth note, harder on the beat. Throws, shots and launches play on eighth notes, a throw let go near the beat answers on the HUD, and snowball, egg and splash potion bursts land on the next eighth note with sparks.
+23. Mining with a fast pickaxe felt broken, though the log showed every block breaking on the beat. Holding the first block until the next beat made a 0.1 s block take up to 0.35 s, so the player moved on and the break was aborted. The first block of a run now breaks on vanilla time unless a beat is a quarter beat away, and only chained blocks lock to the grid. The server's durability update after each block no longer restarts the next one.
 
 ## Code map
 

@@ -9,10 +9,10 @@ While a song plays:
 - While you move, the view kicks a little wider on beats 1 and 3, like a burst of speed. It rests when you stand still and follows the FOV Effects slider.
 - Mobs and players dance like plushies, all in sync: a hop every two beats that lands on beats 1 and 3, a squash on each landing and a sway of the hips across the bar.
 - Trees shed leaves when a bar opens.
-- Mining hits land on every eighth note with a spray of chips off the block, louder and bigger on the beat. Blocks finish breaking on the beat in a ring of chips, with colored sparks on beats 1 and 3. Their cracks ramp with the beat, and a placed block kicks up dust on the next sixteenth.
+- Mining hits land on every eighth note with a spray of chips off the block, louder and bigger on the beat. Broken blocks burst in a ring of chips on the next eighth note, with colored sparks on beats 1 and 3. Their cracks ramp with the beat, and a placed block kicks up dust on the next sixteenth.
 - Combat snaps to the song: your hits flash and burst on the eighth note (bigger when you strike on the beat), melee mobs cue on the off-beat and strike on the beat, creepers detonate on the beat, and raising your shield right before a hit lands a perfect parry.
 - Every beat runs a velocity ramp: animations, particles and cracks slow down for a moment and then whip forward into the next beat, like a velocity edit. Chips hang in the air, then fly.
-- Repeated mining drifts toward strong beats, so a chain of slow blocks settles onto beat 1, and it never runs much slower than vanilla. Breaking, placing or hitting on the beat answers with sparks around the crosshair.
+- The first block you mine breaks as fast as in vanilla. Holding click across blocks locks the chain onto the beat and drifts it toward strong beats, so a chain of slow blocks settles onto beat 1, without running much slower than vanilla. Breaking, placing or hitting on the beat answers with sparks around the crosshair.
 - In a fight the brackets turn red on the beat where your next full-strength swing or full bow draw will be ready.
 - When the band comes back after a break, a rainbow ring rolls out from you, fireworks go up and the trees let go.
 - Mobs flash on the eighth note when hit and fall on the next beat when killed.
