@@ -3,6 +3,7 @@ package it.vitoesposito.mineatdisco;
 import static net.fabricmc.fabric.api.client.command.v2.ClientCommands.argument;
 import static net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal;
 
+import com.mojang.blaze3d.platform.InputConstants;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import it.vitoesposito.mineatdisco.mixin.FallingLeavesInvoker;
@@ -25,12 +26,17 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.VanillaHudElements;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.DeltaTracker;
+import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
@@ -137,6 +143,13 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static float lastYaw;
 	private static float lastPitch;
 	private static long lastFrame;
+	private static KeyMapping menuKey;
+	private static KeyMapping tapKey;
+	private static boolean openMenu;
+	private static String currentSong = "";
+	private static double tapSum;
+	private static int tapCount;
+	private static double lastTapAt = Double.NEGATIVE_INFINITY;
 	private static final List<Deferred> deferred = new ArrayList<>();
 	private static boolean releasing;
 
@@ -148,6 +161,10 @@ public final class MineAtDisco implements ClientModInitializer {
 		} catch (IOException | NumberFormatException e) {
 			// No saved offset yet.
 		}
+		menuKey = KeyMappingHelper.registerKeyMapping(
+				new KeyMapping("key.mineatdisco.menu", InputConstants.KEY_M, KeyMapping.Category.MISC));
+		tapKey = KeyMappingHelper.registerKeyMapping(
+				new KeyMapping("key.mineatdisco.tap", InputConstants.KEY_B, KeyMapping.Category.MISC));
 		ClientTickEvents.END_CLIENT_TICK.register(MineAtDisco::tick);
 		HudElementRegistry.attachElementAfter(VanillaHudElements.CROSSHAIR,
 				Identifier.fromNamespaceAndPath("mineatdisco", "beat"), MineAtDisco::drawBeat);
@@ -164,12 +181,28 @@ public final class MineAtDisco implements ClientModInitializer {
 			});
 		}
 		ClientCommandRegistrationCallback.EVENT.register((dispatcher, context) -> dispatcher.register(literal("disco")
+				.executes(command -> {
+					openMenu = true;
+					return 1;
+				})
 				.then(literal("play").then(argument("song", StringArgumentType.greedyString())
 						.suggests((command, builder) -> SharedSuggestionProvider.suggest(songs(), builder))
 						.executes(command -> play(command.getSource(), StringArgumentType.getString(command, "song")))))
 				.then(literal("stop").executes(command -> {
 					stop();
 					command.getSource().sendFeedback(Component.translatable("mineatdisco.stopped"));
+					return 1;
+				}))
+				.then(literal("x2").executes(command -> {
+					scaleTempo(true);
+					return 1;
+				}))
+				.then(literal("half").executes(command -> {
+					scaleTempo(false);
+					return 1;
+				}))
+				.then(literal("tap").executes(command -> {
+					tapOffset();
 					return 1;
 				}))
 				.then(literal("offset").then(argument("ms", IntegerArgumentType.integer(-500, 500))
@@ -461,10 +494,15 @@ public final class MineAtDisco implements ClientModInitializer {
 		double vanillaSeconds = (Math.ceil(1.0 / step) + (chained ? 5 : 0)) / 20.0;
 		int minTicks = Math.max(1, (int) Math.ceil(0.7f / step) - 1);
 		double minBeat = Math.ceil(BeatTracker.beatAt(beats, now + minTicks / 20.0));
+		double idealBeat = Math.round(BeatTracker.beatAt(beats, now + vanillaSeconds));
+		if (minBeat < 0 || idealBeat < 0) {
+			crackPos = null;
+			targetBeat = Double.NaN;
+			return;
+		}
 		if (chained) {
 			minBeat = Math.max(minBeat, lastBreakBeat + 1);
 		}
-		double idealBeat = Math.round(BeatTracker.beatAt(beats, now + vanillaSeconds));
 		targetBeat = Math.max(minBeat, idealBeat);
 	}
 
@@ -480,7 +518,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		if (!pos.equals(crackPos)) {
 			startMining(pos, side);
 		}
-		if (crackPos == null || Double.isNaN(targetBeat)) {
+		if (crackPos == null || Double.isNaN(targetBeat) || targetBeat < 0) {
 			return vanillaProgress;
 		}
 		Minecraft client = Minecraft.getInstance();
@@ -500,7 +538,12 @@ public final class MineAtDisco implements ClientModInitializer {
 		boolean serverReady = step * (ticks + 1) >= 0.7f;
 		if (now + 0.025 >= due && !serverReady) {
 			double left = (Math.ceil(0.7f / step) - 1 - ticks) / 20.0;
-			targetBeat = Math.ceil(BeatTracker.beatAt(beats, now + Math.max(0.05, left)));
+			double nextBeat = Math.ceil(BeatTracker.beatAt(beats, now + Math.max(0.05, left)));
+			if (nextBeat < 0) {
+				crackPos = null;
+				return vanillaProgress;
+			}
+			targetBeat = nextBeat;
 			due = BeatTracker.timeAt(beats, targetBeat);
 		}
 		if (now + 0.025 >= due && serverReady) {
@@ -569,7 +612,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		float elapsed = Math.min(0.1f, (nanos - lastFrame) / 1e9f);
 		lastFrame = nanos;
 		motion += (motionNow - motion) * (1 - (float) Math.exp(-elapsed / 0.3f));
-		float loudness = beatNow < 0 ? 0 : energy[(int) beatNow];
+		float loudness = beatNow < 0 || energy.length == 0 ? 0 : energy[Mth.clamp((int) beatNow, 0, energy.length - 1)];
 		energyNow += (loudness - energyNow) * (1 - (float) Math.exp(-elapsed / (loudness > energyNow ? 0.08f : 0.5f)));
 		int beat = (int) Math.floor(beatNow);
 		if (beat != lastBeat) {
@@ -727,25 +770,119 @@ public final class MineAtDisco implements ClientModInitializer {
 			command.sendError(Component.translatable("mineatdisco.not_found", name, SONGS.toString()));
 			return 0;
 		}
+		playSong(name, command.getClient());
+		return 1;
+	}
+
+	private static void playSong(String name, Minecraft client) {
 		stop();
 		int mine = request;
-		command.sendFeedback(Component.translatable("mineatdisco.loading", name));
+		if (client.player != null) {
+			client.player.sendOverlayMessage(Component.translatable("mineatdisco.loading", name));
+		}
 		// Decoding and beat tracking take about a second, so they run off the client thread.
 		CompletableFuture.supplyAsync(() -> decode(SONGS.resolve(name + ".ogg"))).whenCompleteAsync((song, error) -> {
 			if (song == null) {
-				command.sendError(Component.translatable("mineatdisco.failed", name));
+				if (client.player != null) {
+					client.player.sendSystemMessage(Component.translatable("mineatdisco.failed", name));
+				}
 			} else if (mine != request) {
 				LibCStdlib.free(song.pcm());
 			} else {
-				float volume = command.getClient().options.getFinalSoundSourceVolume(SoundSource.MUSIC);
+				float volume = client.options.getFinalSoundSourceVolume(SoundSource.MUSIC);
 				start(song, volume);
-				command.sendFeedback(Component.translatable("mineatdisco.playing", name, Math.round(BeatTracker.bpm(beats))));
-				if (volume == 0) {
-					command.sendError(Component.translatable("mineatdisco.muted"));
+				currentSong = name;
+				if (client.player != null) {
+					client.player.sendOverlayMessage(
+							Component.translatable("mineatdisco.playing", name, Math.round(BeatTracker.bpm(beats))));
+					if (volume == 0) {
+						client.player.sendSystemMessage(Component.translatable("mineatdisco.muted"));
+					}
 				}
 			}
-		}, command.getClient());
-		return 1;
+		}, client);
+	}
+
+	/** Doubles or halves the tracked beat grid for songs whose tempo reads half or double. */
+	private static void scaleTempo(boolean doubleTempo) {
+		if (beats.length < 4) {
+			return;
+		}
+		double bpm = BeatTracker.bpm(beats);
+		if (doubleTempo && bpm * 2 <= 300) {
+			double[] nextBeats = new double[beats.length * 2 - 1];
+			float[] nextEnergy = new float[energy.length * 2 - 1];
+			for (int i = 0; i < beats.length; i++) {
+				nextBeats[2 * i] = beats[i];
+				nextEnergy[2 * i] = energy[i];
+				if (i + 1 < beats.length) {
+					nextBeats[2 * i + 1] = 0.5 * (beats[i] + beats[i + 1]);
+					nextEnergy[2 * i + 1] = 0.5f * (energy[i] + energy[i + 1]);
+				}
+			}
+			beats = nextBeats;
+			energy = nextEnergy;
+		} else if (!doubleTempo && bpm / 2 >= 45) {
+			int count = (beats.length + 1) / 2;
+			double[] nextBeats = new double[count];
+			float[] nextEnergy = new float[count];
+			for (int i = 0; i < count; i++) {
+				nextBeats[i] = beats[2 * i];
+				nextEnergy[i] = energy[2 * i];
+			}
+			beats = nextBeats;
+			energy = nextEnergy;
+		} else {
+			return;
+		}
+		lastBeat = -1;
+		lastEighth = -1;
+		lastVisualEighth = -1;
+		crackPos = null;
+		LocalPlayer player = Minecraft.getInstance().player;
+		if (player != null) {
+			player.sendOverlayMessage(
+					Component.translatable("mineatdisco.playing", currentSong, Math.round(BeatTracker.bpm(beats))));
+		}
+	}
+
+	/** Calibrates the visual offset from the player tapping in time with the beat they hear. */
+	private static void tapOffset() {
+		if (source == 0 || paused || beats.length < 2) {
+			return;
+		}
+		double now = played();
+		double raw = BeatTracker.beatAt(beats, now);
+		int index = Mth.clamp((int) Math.round(raw < 0 ? 0 : raw), 0, beats.length - 1);
+		double period = index + 1 < beats.length ? beats[index + 1] - beats[index] : beats[index] - beats[index - 1];
+		if (period <= 0) {
+			return;
+		}
+		double diff = now - beats[index];
+		diff -= period * Math.rint(diff / period);
+		if (now - lastTapAt > 2.5) {
+			tapCount = 1;
+			tapSum = diff;
+		} else {
+			double avg = tapSum / tapCount;
+			double delta = diff - avg;
+			delta -= period * Math.rint(delta / period);
+			diff = avg + delta;
+			if (tapCount < 8) {
+				tapCount++;
+				tapSum += diff;
+			} else {
+				tapSum = tapSum * 7 / 8 + diff;
+			}
+		}
+		lastTapAt = now;
+		int ms = Mth.clamp((int) Math.round(tapSum / tapCount * 1000), -500, 500);
+		saveOffset(ms);
+		Minecraft client = Minecraft.getInstance();
+		client.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.2f));
+		if (client.player != null) {
+			client.player.sendOverlayMessage(Component.translatable("mineatdisco.offset", ms));
+		}
 	}
 
 	/** Returns null when the file is not Ogg Vorbis in mono or stereo. */
@@ -807,6 +944,7 @@ public final class MineAtDisco implements ClientModInitializer {
 			AL10.alDeleteBuffers(buffer);
 		}
 		source = 0;
+		currentSong = "";
 		beats = new double[0];
 		audioBeatNow = -1;
 		telegraphedMobs.clear();
@@ -814,6 +952,16 @@ public final class MineAtDisco implements ClientModInitializer {
 	}
 
 	private static void tick(Minecraft client) {
+		while (menuKey != null && menuKey.consumeClick()) {
+			openMenu = true;
+		}
+		while (tapKey != null && tapKey.consumeClick()) {
+			tapOffset();
+		}
+		if (openMenu) {
+			openMenu = false;
+			client.gui.setScreen(new DiscoScreen());
+		}
 		if (source == 0) {
 			return;
 		}
@@ -877,14 +1025,111 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 	}
 
-	private static int setOffset(FabricClientCommandSource command, int ms) {
+	private static boolean saveOffset(int ms) {
 		offset = ms / 1000.0;
 		try {
 			Files.writeString(OFFSET_FILE, Integer.toString(ms));
-			command.sendFeedback(Component.translatable("mineatdisco.offset", ms));
+			return true;
 		} catch (IOException e) {
+			return false;
+		}
+	}
+
+	private static int setOffset(FabricClientCommandSource command, int ms) {
+		if (saveOffset(ms)) {
+			command.sendFeedback(Component.translatable("mineatdisco.offset", ms));
+		} else {
 			command.sendError(Component.translatable("mineatdisco.offset_not_saved", ms));
 		}
 		return 1;
+	}
+
+	/**
+	 * In-world song picker and calibration screen. Keeps the game unpaused and leaves the crosshair clear so the player
+	 * can watch the beat square while tapping Space or adjusting tempo.
+	 */
+	private static final class DiscoScreen extends Screen {
+		private static final int PAGE_SIZE = 4;
+		private int page;
+
+		private DiscoScreen() {
+			super(Component.translatable("mineatdisco.menu.title"));
+		}
+
+		@Override
+		public boolean isPauseScreen() {
+			return false;
+		}
+
+		@Override
+		protected void init() {
+			int cx = width / 2;
+			int top = 36;
+			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.half"),
+					b -> scaleTempo(false)).bounds(cx - 156, top, 36, 20).build());
+			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.double"),
+					b -> scaleTempo(true)).bounds(cx - 116, top, 36, 20).build());
+			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.earlier"),
+					b -> saveOffset(Mth.clamp((int) Math.round(offset * 1000) - 10, -500, 500)))
+					.bounds(cx - 76, top, 44, 20).build());
+			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.tap"),
+					b -> tapOffset()).bounds(cx - 28, top, 80, 20).build());
+			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.later"),
+					b -> saveOffset(Mth.clamp((int) Math.round(offset * 1000) + 10, -500, 500)))
+					.bounds(cx + 56, top, 44, 20).build());
+			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.stop"),
+					b -> stop()).bounds(cx + 104, top, 52, 20).build());
+
+			List<String> list = songs();
+			int pages = Math.max(1, (list.size() + PAGE_SIZE - 1) / PAGE_SIZE);
+			page = Mth.clamp(page, 0, pages - 1);
+			int listTop = height / 2 + 38;
+			for (int i = 0; i < PAGE_SIZE && page * PAGE_SIZE + i < list.size(); i++) {
+				String song = list.get(page * PAGE_SIZE + i);
+				addRenderableWidget(Button.builder(Component.literal(song),
+						b -> playSong(song, minecraft)).bounds(cx - 100, listTop + i * 22, 200, 20).build());
+			}
+			if (pages > 1) {
+				addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.prev"), b -> {
+					page = (page + pages - 1) % pages;
+					rebuildWidgets();
+				}).bounds(cx - 126, listTop, 22, 20).build());
+				addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.next"), b -> {
+					page = (page + 1) % pages;
+					rebuildWidgets();
+				}).bounds(cx + 104, listTop, 22, 20).build());
+			}
+		}
+
+		@Override
+		public void extractBackground(GuiGraphicsExtractor gui, int mouseX, int mouseY, float partialTick) {
+			// Keep the center around the crosshair clear so the beat square and pips stay visible while calibrating.
+			gui.fill(width / 2 - 164, 6, width / 2 + 164, 62, 0x90000000);
+		}
+
+		@Override
+		public void extractRenderState(GuiGraphicsExtractor gui, int mouseX, int mouseY, float partialTick) {
+			super.extractRenderState(gui, mouseX, mouseY, partialTick);
+			int cx = width / 2;
+			Component status = source != 0 && beats.length >= 2
+					? Component.translatable("mineatdisco.playing", currentSong, Math.round(BeatTracker.bpm(beats)))
+					: Component.translatable("mineatdisco.menu.idle");
+			gui.centeredText(font, status, cx, 11, 0xFFFFFFFF);
+			gui.centeredText(font, Component.translatable("mineatdisco.menu.offset", Math.round(offset * 1000)),
+					cx, 23, 0xFFFFD040);
+			if (songs().isEmpty()) {
+				gui.centeredText(font, Component.translatable("mineatdisco.menu.empty", SONGS.toString()),
+						cx, height / 2 + 44, 0xFFCCCCCC);
+			}
+		}
+
+		@Override
+		public boolean keyPressed(KeyEvent event) {
+			if (event.key() == InputConstants.KEY_SPACE) {
+				tapOffset();
+				return true;
+			}
+			return super.keyPressed(event);
+		}
 	}
 }

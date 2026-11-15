@@ -19,11 +19,13 @@ While a song plays:
 
 1. Install Fabric Loader and Fabric API for Minecraft 26.3, then add the mod jar to `mods`.
 2. Put your songs in the `disco` folder inside the game folder. The mod creates it on first launch. Songs must be Ogg Vorbis, so convert other formats first: `ffmpeg -i song.mp3 song.ogg`.
-3. In a world, run `/disco play <song>`. Tab lists the songs it found.
+3. In a world, press `M` (or run `/disco`) to open the song menu, or run `/disco play <song>`.
 
 `/disco stop` stops the music.
 
-If the square closes before you hear the beat, which is common with Bluetooth headphones, delay it with `/disco offset <ms>`. A negative value makes it earlier.
+If a song's tempo reads half or double, click `/2` or `x2` in the menu (or run `/disco half` or `/disco x2`).
+
+If the square closes before you hear the beat, which is common with Bluetooth headphones, tap `B` while playing (or `Space` inside the `M` menu) in time with the music, or set the delay with `/disco offset <ms>`. A negative value makes it earlier.
 
 ## Build
 

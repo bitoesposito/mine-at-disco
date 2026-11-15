@@ -1,4 +1,6 @@
 {
+	"key.mineatdisco.menu": "Open Disco Menu",
+	"key.mineatdisco.tap": "Tap Beat to Sync",
 	"mineatdisco.loading": "Finding the beat in %s...",
 	"mineatdisco.playing": "Playing %s at %s BPM",
 	"mineatdisco.muted": "Music or Master volume is at 0%%, so the song is silent. Raise it in the sound options",
@@ -6,5 +8,17 @@
 	"mineatdisco.not_found": "No song named %s. Put .ogg files in %s",
 	"mineatdisco.failed": "Could not load %s. It must be an Ogg Vorbis file in mono or stereo",
 	"mineatdisco.offset": "Audio offset is now %s ms",
-	"mineatdisco.offset_not_saved": "Audio offset is %s ms until you quit. It could not be saved"
+	"mineatdisco.offset_not_saved": "Audio offset is %s ms until you quit. It could not be saved",
+	"mineatdisco.menu.title": "Mine at Disco",
+	"mineatdisco.menu.idle": "No song playing",
+	"mineatdisco.menu.offset": "Offset: %s ms",
+	"mineatdisco.menu.half": "/2",
+	"mineatdisco.menu.double": "x2",
+	"mineatdisco.menu.earlier": "-10 ms",
+	"mineatdisco.menu.later": "+10 ms",
+	"mineatdisco.menu.tap": "Tap (Space)",
+	"mineatdisco.menu.stop": "Stop",
+	"mineatdisco.menu.prev": "<",
+	"mineatdisco.menu.next": ">",
+	"mineatdisco.menu.empty": "Put .ogg files in %s"
 }

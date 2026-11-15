@@ -192,7 +192,10 @@ public final class BeatTracker {
 
 	/** Inverse of beatAt, for a beat position inside the tracked beats. */
 	public static double timeAt(double[] beats, double beat) {
-		int i = Math.min((int) beat, beats.length - 2);
+		if (beats.length < 2) {
+			return Double.NaN;
+		}
+		int i = Math.clamp((int) beat, 0, beats.length - 2);
 		return beats[i] + (beat - i) * (beats[i + 1] - beats[i]);
 	}
 
