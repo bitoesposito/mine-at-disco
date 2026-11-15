@@ -39,6 +39,7 @@ Tuning the owner asked for, in order:
 21. Kills land on the beat: a mob's hurt flash stays on the eighth note, its death waits for the next beat and pops with sparks and a HUD answer.
 22. Eating and throwing follow the song. While the player eats or drinks, vanilla's 4-tick chewing timer is off and the mod bites on every eighth note, harder on the beat. Throws, shots and launches play on eighth notes, a throw let go near the beat answers on the HUD, and snowball, egg and splash potion bursts land on the next eighth note with sparks.
 23. Mining with a fast pickaxe felt broken, though the log showed every block breaking on the beat. Holding the first block until the next beat made a 0.1 s block take up to 0.35 s, so the player moved on and the break was aborted. The first block of a run now breaks on vanilla time unless a beat is a quarter beat away, and only chained blocks lock to the grid. The server's durability update after each block no longer restarts the next one.
+24. Music following borrows from osu! (ppy/osu, ppy/osu-framework): the interpolating audio clock with drift recovery, measured device latency instead of a fixed platform offset, and drawing one frame ahead.
 
 ## Code map
 
@@ -52,8 +53,9 @@ Tuning the owner asked for, in order:
 
 ## Timing
 
-- `played()` is the audio position: OpenAL's sample offset, smoothed with the system clock because OpenAL updates it about every 20 ms.
-- Sounds follow the audio position. Visuals follow `played() - offset`, which `/disco offset`, tapping `B` in-game, or tapping `Space` in the menu calibrates for output latency.
+- `played()` is the mixer position, smoothed by `AudioClock` the way osu-framework's InterpolatingFramedClock does: real time between OpenAL readings, an 80 ms half-life pull toward each fresh reading (which also cancels sound card drift), a jump past 33 ms of error, never backwards. Its self-check runs with `java src/main/java/it/vitoesposito/mineatdisco/AudioClock.java`.
+- OpenAL Soft's `AL_SOFT_source_latency` reports the mixer-to-speaker latency, which lazer instead guesses with a fixed platform offset. Visuals follow `visualTime()`: mixer position minus that latency, plus one frame (a frame drawn now shows up a frame later, like lazer's early activation), minus the player's offset. The offset now only covers delay OpenAL can't see, such as Bluetooth, and lives in `disco/audio-offset.txt`.
+- Sounds the mod plays share the song's latency, so they follow `played()` directly.
 - `beat()` is the visual beat with the ramp applied, and `beatSteady()` the same without it. Animations read `beat()`, `particleSpeed()` or `lagTicks()`, the camera and impact effects read `beatSteady()`, and no visual reads the audio clock. Mining is split: the hit sound plays on the audio eighth note, the chips on the steady visual one, the cracks on the ramped beat.
 - `beat()` counts from the first beat of a phrase: `beat % 4` is the position in the bar, `beat % 8` in the phrase. During a velocity ramp it lags behind the real beat and then catches up.
 - Grid: footsteps, combat, mining and breaking fall on eighth notes, other world sounds on the next sixteenth. A sound in the first 20% of a grid step plays at once.

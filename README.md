@@ -30,7 +30,7 @@ While a song plays:
 
 If a song's tempo reads half or double, click `/2` or `x2` in the menu (or run `/disco half` or `/disco x2`).
 
-If the brackets land before you hear the beat, which is common with Bluetooth headphones, tap `B` while playing (or `Space` inside the `M` menu) in time with the music, or set the delay with `/disco offset <ms>`. A negative value makes it earlier.
+The mod reads your audio device's latency from OpenAL and keeps the visuals on what you hear, so most setups need no calibration. If the brackets still land before you hear the beat, which is common with Bluetooth headphones, tap `B` while playing (or `Space` inside the `M` menu) in time with the music, or set the delay with `/disco offset <ms>`. A negative value makes it earlier.
 
 On a multiplayer server the mod only moves visuals and sounds. Mining timing, mob timing and parries need a world you play yourself.
 
