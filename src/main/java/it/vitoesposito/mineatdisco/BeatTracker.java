@@ -58,22 +58,20 @@ public final class BeatTracker {
 			peak = Math.max(peak, loudness[f]);
 		}
 
-		// An onset is a rise in loudness. Scale to unit variance so TIGHTNESS means the same for every song.
-		double[] onset = new double[frames];
-		double mean = 0;
+		// An onset is a rise in overall loudness plus a rise in the bass, which is where the kick lands. Each part is
+		// scaled to unit variance, so neither drowns the other and TIGHTNESS means the same for every song.
+		double[] full = new double[frames];
+		double[] kick = new double[frames];
 		for (int f = 2; f < frames; f++) {
-			onset[f] = Math.max(0, loudness[f] - loudness[f - 2]);
-			mean += onset[f] / frames;
+			full[f] = Math.max(0, loudness[f] - loudness[f - 2]);
+			kick[f] = Math.max(0, bass[f] - bass[f - 2]);
 		}
-		double variance = 0;
-		for (double o : onset) {
-			variance += (o - mean) * (o - mean) / frames;
-		}
-		if (variance == 0) {
+		if (!standardize(full) || !standardize(kick)) {
 			return new double[0];
 		}
+		double[] onset = new double[frames];
 		for (int f = 0; f < frames; f++) {
-			onset[f] = (onset[f] - mean) / Math.sqrt(variance);
+			onset[f] = full[f] + kick[f];
 		}
 
 		// ponytail: tempo is folded into 90-180 BPM, so a slow song reads as double time. Add a x2 and /2 control if that bothers.
@@ -260,6 +258,24 @@ public final class BeatTracker {
 			}
 		}
 		return drops;
+	}
+
+	private static boolean standardize(double[] values) {
+		double mean = 0;
+		for (double v : values) {
+			mean += v / values.length;
+		}
+		double variance = 0;
+		for (double v : values) {
+			variance += (v - mean) * (v - mean) / values.length;
+		}
+		if (variance == 0) {
+			return false;
+		}
+		for (int i = 0; i < values.length; i++) {
+			values[i] = (values[i] - mean) / Math.sqrt(variance);
+		}
+		return true;
 	}
 
 	/** Returns the beat index plus the phase within that beat, or -1 outside the tracked beats. */
