@@ -5,15 +5,15 @@ A Fabric mod for Minecraft Java 26.3 that plays your own music and syncs the gam
 While a song plays:
 
 - A square around the crosshair closes on every beat, and four pips below it count the bar.
-- The hotbar hops and particles swell on each beat, hardest on the first beat of the bar.
-- The camera breathes in and out with the bar while you move, and rests when you stand still.
+- The hotbar hops on each beat, hardest on the first beat of the bar.
+- While you move, the view kicks a little wider on beats 1 and 3, like a burst of speed. It rests when you stand still and follows the FOV Effects slider.
 - Mobs and players dance like plushies, all in sync: a hop every two beats that lands on beats 1 and 3, a squash on each landing and a sway of the hips across the bar.
 - Trees shed leaves when a bar opens.
-- Mining hits land on every eighth note with a burst of chips, louder and bigger on the beat. Blocks finish breaking on the beat, their cracks ramp with it, and a placed block puffs on the next sixteenth.
+- Mining hits land on every eighth note with a spray of chips off the block, louder and bigger on the beat. Blocks finish breaking on the beat in a ring of chips, with colored sparks on beats 1 and 3. Their cracks ramp with the beat, and a placed block kicks up dust on the next sixteenth.
 - Combat snaps to the song: your hits flash and burst on the eighth note (bigger when you strike on the beat), melee mobs cue on the off-beat and strike on the beat, creepers detonate on the beat, and raising your shield right before a hit lands a perfect parry.
-- Every beat runs a velocity ramp: visuals slow down for a moment and then whip forward into the next beat, like a velocity edit. Chips hang in the air, then fly.
+- Every beat runs a velocity ramp: animations and cracks slow down for a moment and then whip forward into the next beat, like a velocity edit.
 - Other world sounds wait for the song's grid: footsteps and combat on eighth notes, the rest on the next sixteenth.
-- Every effect grows when the song is loud and calms down in quiet parts.
+- Every effect grows when the song is loud and calms down in quiet parts. Extra particles follow your Particles setting.
 
 ## Use
 
