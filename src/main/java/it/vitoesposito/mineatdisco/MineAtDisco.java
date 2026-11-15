@@ -18,6 +18,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 import net.fabricmc.api.ClientModInitializer;
@@ -39,13 +40,21 @@ import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.particles.BlockParticleOption;
+import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.ARGB;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
@@ -72,6 +81,10 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static final double MINING_GRACE = 0.3;
 	/** Chips per mining hit on the first beat of the bar at full loudness. */
 	private static final int CHIPS = 20;
+	/** Distance in beats from the nearest beat within which a player attack counts as on-beat. */
+	private static final double BEAT_WINDOW = 0.22;
+	/** Ticks after raising a shield during which blocking an attack counts as a perfect parry. */
+	private static final int PARRY_TICKS = 7;
 
 	private record Song(ShortBuffer pcm, int channels, int sampleRate, double[] beats, float[] energy) {
 	}
@@ -93,6 +106,10 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static double offset;
 	/** Counts play and stop requests, so a song that finishes loading late knows it was replaced. */
 	private static int request;
+	/** Audio beat position for this frame, readable from the integrated server thread without touching OpenAL. */
+	private static volatile double audioBeatNow = -1;
+	/** Entity ids of mobs that already played their pre-beat warning cue on the current beat. */
+	private static final Set<Integer> telegraphedMobs = ConcurrentHashMap.newKeySet();
 	/** Beat position for this frame, -1 outside the tracked beats. Saves asking OpenAL once per entity. */
 	private static double beatNow = -1;
 	private static int lastBeat = -1;
@@ -217,10 +234,12 @@ public final class MineAtDisco implements ClientModInitializer {
 				|| sound instanceof TickableSoundInstance) {
 			return false;
 		}
-		// Footsteps and breaking blocks fall on eighth notes like the mining hits. Other sounds take the next sixteenth.
+		// Footsteps, combat and breaking blocks fall on eighth notes like the mining hits. Other sounds take the next sixteenth.
 		String name = sound.getIdentifier().getPath();
-		int lines = name.endsWith(".hit") || name.endsWith(".step") || name.endsWith(".break") ? 2 : 4;
-		double due = nextLine(lines);
+		boolean eighth = name.endsWith(".hit") || name.endsWith(".step") || name.endsWith(".break")
+				|| name.endsWith(".hurt") || name.endsWith(".death") || name.startsWith("entity.player.attack.")
+				|| name.equals("item.shield.block");
+		double due = nextLine(eighth ? 2 : 4);
 		if (Double.isNaN(due)) {
 			return false;
 		}
@@ -247,9 +266,165 @@ public final class MineAtDisco implements ClientModInitializer {
 		return true;
 	}
 
-	/** True while a song is playing and mining should snap to its beat. */
+	/** True while a song is playing and mining or combat should snap to its beat. */
 	public static boolean syncMining() {
-		return source != 0 && !paused && beatRaw >= 0;
+		return audioBeatNow >= 0;
+	}
+
+	/** True when no song plays or the audio clock is inside the beat window where mobs strike and creepers detonate. */
+	public static boolean onBeatWindow() {
+		double beat = audioBeatNow;
+		if (beat < 0) {
+			return true;
+		}
+		double phase = beat % 1;
+		return phase < 0.25 || phase >= 0.92;
+	}
+
+	/**
+	 * Holds a mob's melee attack until the beat, playing a warning cue on the eighth note before it so the player can
+	 * raise a shield in time.
+	 */
+	public static boolean canMobAttack(Mob mob) {
+		double beat = audioBeatNow;
+		if (beat < 0) {
+			return true;
+		}
+		double phase = beat % 1;
+		if (phase < 0.25 || phase >= 0.92) {
+			return true;
+		}
+		if (phase >= 0.45 && phase < 0.85 && telegraphedMobs.add(mob.getId())) {
+			int id = mob.getId();
+			Minecraft.getInstance().execute(() -> telegraph(id));
+		}
+		return false;
+	}
+
+	private static void telegraph(int entityId) {
+		Minecraft client = Minecraft.getInstance();
+		if (client.level == null) {
+			return;
+		}
+		Entity entity = client.level.getEntity(entityId);
+		if (entity == null) {
+			return;
+		}
+		playImmediate(SoundEvents.NOTE_BLOCK_HAT.value(), SoundSource.HOSTILE, 0.85f * drive(), 1.75f,
+				entity.getX(), entity.getY(), entity.getZ());
+		burst(entity, ParticleTypes.CRIT, 6);
+	}
+
+	/**
+	 * Bursts sparks from an attacked target on the next eighth note, bigger and with a sweep flash when the player
+	 * clicked in time with the beat.
+	 */
+	public static void onAttack(Entity target) {
+		if (!active() || target == null) {
+			return;
+		}
+		double beat = audioBeatNow;
+		boolean onBeat = beat >= 0 && Math.abs(beat - Math.round(beat)) <= BEAT_WINDOW;
+		int id = target.getId();
+		double due = nextLine(2);
+		Runnable effect = () -> {
+			ClientLevel level = Minecraft.getInstance().level;
+			Entity hit = level == null ? null : level.getEntity(id);
+			if (hit != null) {
+				burst(hit, ParticleTypes.CRIT, Math.round((onBeat ? 18 : 8) * drive()));
+				if (onBeat) {
+					level.addParticle(ParticleTypes.SWEEP_ATTACK, hit.getX(), hit.getY(0.5), hit.getZ(), 0, 0, 0);
+				}
+			}
+		};
+		if (Double.isNaN(due)) {
+			effect.run();
+		} else {
+			deferred.add(new Deferred(effect, due));
+		}
+	}
+
+	/** Holds a mob's hurt flash, hurt sound and death animation until the next eighth note so hits land on the grid. */
+	public static boolean holdCombat(LivingEntity entity, Runnable action) {
+		if (!active() || entity instanceof Player) {
+			return false;
+		}
+		double due = nextLine(2);
+		if (Double.isNaN(due)) {
+			return false;
+		}
+		deferred.add(new Deferred(() -> {
+			if (entity.level() == Minecraft.getInstance().level) {
+				action.run();
+			}
+		}, due));
+		return true;
+	}
+
+	/**
+	 * Checks whether {@code blocker} raised their shield right before the attack (within {@link #PARRY_TICKS} ticks).
+	 * On a perfect parry, knocks the attacker back hard, stuns it and skips axe shield-disable.
+	 */
+	public static boolean tryParry(LivingEntity blocker, LivingEntity attacker, DamageSource source, float amount) {
+		if (audioBeatNow < 0 || blocker.getTicksUsingItem() > PARRY_TICKS) {
+			return false;
+		}
+		attacker.knockback(1.4, blocker.getX() - attacker.getX(), blocker.getZ() - attacker.getZ(), source, amount);
+		attacker.hurtDuration = 10;
+		attacker.hurtTime = 10;
+		int id = attacker.getId();
+		Minecraft.getInstance().execute(() -> parryBurst(id));
+		return true;
+	}
+
+	/** Triggers the parry clang and spark burst when a newly raised shield blocks a projectile. */
+	public static void tryParryProjectile(LivingEntity blocker, Entity projectile) {
+		if (audioBeatNow >= 0 && blocker.getTicksUsingItem() <= PARRY_TICKS) {
+			int id = projectile != null ? projectile.getId() : blocker.getId();
+			Minecraft.getInstance().execute(() -> parryBurst(id));
+		}
+	}
+
+	private static void parryBurst(int targetId) {
+		Minecraft client = Minecraft.getInstance();
+		if (client.level == null || client.player == null) {
+			return;
+		}
+		Entity target = client.level.getEntity(targetId);
+		Entity center = target != null ? target : client.player;
+		playImmediate(SoundEvents.ANVIL_LAND, SoundSource.PLAYERS, 0.55f * drive(), 1.8f,
+				center.getX(), center.getY(), center.getZ());
+		playImmediate(SoundEvents.BELL_BLOCK, SoundSource.PLAYERS, 0.9f * drive(), 1.5f,
+				center.getX(), center.getY(), center.getZ());
+		client.level.addParticle(ParticleTypes.SWEEP_ATTACK, center.getX(), center.getY(0.5), center.getZ(), 0, 0, 0);
+		burst(center, ParticleTypes.CRIT, Math.round(20 * drive()));
+		burst(center, ParticleTypes.ENCHANTED_HIT, Math.round(14 * drive()));
+	}
+
+	private static void playImmediate(SoundEvent sound, SoundSource category, float volume, float pitch,
+			double x, double y, double z) {
+		releasing = true;
+		try {
+			Minecraft.getInstance().getSoundManager().play(new SimpleSoundInstance(
+					sound, category, volume, pitch, SoundInstance.createUnseededRandom(), x, y, z));
+		} finally {
+			releasing = false;
+		}
+	}
+
+	private static void burst(Entity entity, ParticleOptions particle, int count) {
+		ClientLevel level = Minecraft.getInstance().level;
+		if (level == null) {
+			return;
+		}
+		RandomSource random = level.getRandom();
+		for (int i = count; i > 0; i--) {
+			double dx = random.nextDouble() - 0.5;
+			double dy = random.nextDouble() - 0.5;
+			double dz = random.nextDouble() - 0.5;
+			level.addParticle(particle, entity.getX() + dx * entity.getBbWidth(), entity.getY(0.5) + dy * 0.5,
+					entity.getZ() + dz * entity.getBbWidth(), dx * 0.5, dy * 0.4 + 0.15, dz * 0.5);
+		}
 	}
 
 	/**
@@ -386,7 +561,8 @@ public final class MineAtDisco implements ClientModInitializer {
 	/** Runs once per frame: refreshes the beat and the loudness, then runs the effects that are due. */
 	public static void frame() {
 		double now = source == 0 ? Double.MAX_VALUE : played();
-		double audioBeat = source == 0 ? -1 : BeatTracker.beatAt(beats, now);
+		double audioBeat = source == 0 || paused ? -1 : BeatTracker.beatAt(beats, now);
+		audioBeatNow = audioBeat;
 		beatRaw = source == 0 ? -1 : BeatTracker.beatAt(beats, now - offset);
 		ramp();
 		long nanos = System.nanoTime();
@@ -398,6 +574,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		int beat = (int) Math.floor(beatNow);
 		if (beat != lastBeat) {
 			lastBeat = beat;
+			telegraphedMobs.clear();
 			if (beat >= 0 && beat % 4 == 0) {
 				shedLeaves(beat % BeatTracker.PHRASE == 0 ? 2 : 1);
 			}
@@ -631,6 +808,8 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 		source = 0;
 		beats = new double[0];
+		audioBeatNow = -1;
+		telegraphedMobs.clear();
 		crackPos = null;
 	}
 

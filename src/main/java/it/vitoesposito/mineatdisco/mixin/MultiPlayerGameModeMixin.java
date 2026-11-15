@@ -5,6 +5,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.MultiPlayerGameMode;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -63,5 +65,10 @@ public abstract class MultiPlayerGameModeMixin {
 	@Inject(method = "stopDestroyBlock", at = @At("HEAD"))
 	private void mineatdisco$stop(CallbackInfo info) {
 		MineAtDisco.stopMining();
+	}
+
+	@Inject(method = "attack", at = @At("HEAD"))
+	private void mineatdisco$attack(Player player, Entity target, CallbackInfo info) {
+		MineAtDisco.onAttack(target);
 	}
 }

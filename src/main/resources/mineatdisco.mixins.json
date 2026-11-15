@@ -5,9 +5,12 @@
 	"client": [
 		"CameraMixin",
 		"ClientLevelMixin",
+		"CreeperMixin",
 		"EntityRendererMixin",
 		"FallingLeavesInvoker",
+		"LivingEntityMixin",
 		"LivingEntityRendererMixin",
+		"MeleeAttackGoalMixin",
 		"MultiPlayerGameModeMixin",
 		"ParticleMixin",
 		"SingleQuadParticleMixin",

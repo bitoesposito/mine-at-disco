@@ -23,14 +23,16 @@ Tuning the owner asked for, in order:
 7. Every beat runs a velocity ramp: the visual beat, particles, cracks and entity animations slow down after the beat, then whip forward and land on the next beat. The music never changes pace.
 8. Mining snaps to the beat. `MultiPlayerGameModeMixin` folds vanilla's 5-tick cooldown between blocks into the block's time, drives the crack stages (`0..9`) with the ramped visual beat, and finishes breaking right on the beat so fast mining (such as Efficiency V on stone) breaks one block per beat without drifting or skipping beats.
 9. The D-I-S-C-O flow meter and DISCO mode were tried and dropped: they looked flat and added nothing to the experience.
+10. Combat snaps to the beat without delaying player input. Player attacks deal damage at once, while the mob's red flash, hurt or death sound and spark burst land on the next eighth note (bigger with a sweep flash when clicked on the beat). Melee mobs play a warning cue on the eighth note before the beat and strike on the beat, creepers hold at full swell until the beat, shields raise with no 5-tick delay, and raising a shield right before a hit lands a perfect parry that blasts the attacker back and ignores axe shield-disable.
 
 ## Code map
 
 - `BeatTracker.java` finds beats (onset envelope, tempo by autocorrelation, dynamic programming after Ellis 2007), shifts them so beat 0 opens a phrase, and measures each beat's loudness. `main` is a self-check with a synthetic click track.
-- `MineAtDisco.java` holds everything else: `/disco play|stop|offset`, playback on the mod's own OpenAL source, the audio clock, the sound grid, mining, breaking and placing effects, leaves, the HUD.
+- `MineAtDisco.java` holds everything else: `/disco play|stop|offset`, playback on the mod's own OpenAL source, the audio clock, the sound grid, mining, combat, breaking and placing effects, leaves, the HUD.
 - `mixin/SoundEngineMixin` holds world sounds until the next grid line and calls `frame()` once per frame.
-- `mixin/ClientLevelMixin` takes over the mining hit effect and the block break burst. `mixin/MultiPlayerGameModeMixin` paces block breaking and cracks to the beat.
-- `mixin/LivingEntityRendererMixin` is the mob and player dance and bends walk and hand-swing animations during a ramp. `mixin/EntityRendererMixin` bends entity animation during a ramp. `mixin/CameraMixin` is the FOV breath. `mixin/SingleQuadParticleMixin` swells particles and `mixin/ParticleMixin` bends their motion during a ramp. `mixin/FallingLeavesInvoker` sheds leaves.
+- `mixin/ClientLevelMixin` takes over the mining hit effect and the block break burst. `mixin/MultiPlayerGameModeMixin` paces block breaking and cracks to the beat and hooks player attacks.
+- `mixin/LivingEntityMixin` holds mob hurt and death visuals until the next eighth note, removes the 5-tick shield delay while music plays, and handles perfect parries. `mixin/MeleeAttackGoalMixin` holds melee mob strikes until the beat after a pre-beat warning cue, and `mixin/CreeperMixin` holds creeper detonations until the beat.
+- `mixin/LivingEntityRendererMixin` is the mob and player dance and bends walk, hand-swing and death animations during a ramp. `mixin/EntityRendererMixin` bends entity animation during a ramp. `mixin/CameraMixin` is the FOV breath. `mixin/SingleQuadParticleMixin` swells particles and `mixin/ParticleMixin` bends their motion during a ramp. `mixin/FallingLeavesInvoker` sheds leaves.
 - User-facing text lives in `assets/mineatdisco/lang/en_us.json`. Never hardcode a string the player sees.
 
 ## Timing
@@ -39,7 +41,7 @@ Tuning the owner asked for, in order:
 - Sounds follow the audio position. Visuals follow `played() - offset`, which `/disco offset` calibrates for output latency.
 - `beat()` is the visual beat with the ramp applied. A new visual effect reads `beat()`, `particleSpeed()` or `lagTicks()`, never the audio clock. Mining is split: the hit sound plays on the audio eighth note, the chips and cracks on the visual one.
 - `beat()` counts from the first beat of a phrase: `beat % 4` is the position in the bar, `beat % 8` in the phrase. During a velocity ramp it lags behind the real beat and then catches up.
-- Grid: footsteps, mining and breaking fall on eighth notes, other world sounds on the next sixteenth. A sound in the first 20% of a grid step plays at once.
+- Grid: footsteps, combat, mining and breaking fall on eighth notes, other world sounds on the next sixteenth. A sound in the first 20% of a grid step plays at once.
 
 ## Working method
 
@@ -64,7 +66,6 @@ Tuning the owner asked for, in order:
 
 - Leaves that sway on the beat. This needs a terrain shader, and Sodium needs its own.
 - A song picker screen, tap-to-calibrate, and a x2 or /2 fix for songs whose tempo reads double or half.
-- Combat: hits that land on the beat, mob attacks on the beat, a perfect parry.
 - A clip mode for vertical video, an end-of-song card, playing with friends.
 - A license for the repo.
 

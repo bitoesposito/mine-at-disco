@@ -42,10 +42,13 @@ public abstract class LivingEntityRendererMixin {
 			method = "extractRenderState(Lnet/minecraft/world/entity/LivingEntity;Lnet/minecraft/client/renderer/entity/state/LivingEntityRenderState;F)V",
 			at = @At("TAIL"))
 	private void mineatdisco$nod(LivingEntity entity, LivingEntityRenderState state, float partialTick, CallbackInfo info) {
-		// Legs and arm swings (including the first-person hand) follow the ramp, see EntityRendererMixin.
+		// Legs, arm swings and death fall-over follow the ramp, see EntityRendererMixin.
 		state.walkAnimationPos -= MineAtDisco.lagTicks() * state.walkAnimationSpeed;
 		if (state instanceof ArmedEntityRenderState armed && armed.swingAnimation > 0) {
 			armed.swingAnimation = Mth.clamp(entity.getSwingAnimation(partialTick - MineAtDisco.lagTicks()), 0.01f, 0.99f);
+		}
+		if (state.deathTime > 0) {
+			state.deathTime = Math.max(0.01f, state.deathTime - MineAtDisco.lagTicks());
 		}
 		double beat = MineAtDisco.beat();
 		if (beat >= 0) {
