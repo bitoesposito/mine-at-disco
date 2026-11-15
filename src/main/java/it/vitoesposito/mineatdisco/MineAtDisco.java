@@ -30,6 +30,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.resources.sounds.SoundInstance;
 import net.minecraft.client.resources.sounds.TickableSoundInstance;
 import net.minecraft.commands.SharedSuggestionProvider;
@@ -38,7 +39,9 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.ARGB;
+import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.phys.Vec3;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.openal.AL11;
 import org.lwjgl.stb.STBVorbis;
@@ -80,6 +83,13 @@ public final class MineAtDisco implements ClientModInitializer {
 	/** Beat position for this frame, -1 outside the tracked beats. Saves asking OpenAL once per entity. */
 	private static double beatNow = -1;
 	private static int lastBeat = -1;
+	/** How much the player moves or looks around, 0 to 1. The raw value steps per tick, the eased one per frame. */
+	private static float motionNow;
+	private static float motion;
+	private static Vec3 lastPosition = Vec3.ZERO;
+	private static float lastYaw;
+	private static float lastPitch;
+	private static long lastFrame;
 	private static final List<Deferred> deferred = new ArrayList<>();
 	private static boolean releasing;
 
@@ -119,6 +129,16 @@ public final class MineAtDisco implements ClientModInitializer {
 						.executes(command -> setOffset(command.getSource(), IntegerArgumentType.getInteger(command, "ms")))))));
 	}
 
+	/** Beat position for this frame: the whole part counts beats from the first of a phrase, -1 when none is tracked. */
+	public static double beat() {
+		return beatNow;
+	}
+
+	/** 0 while the player stands still with a steady view, 1 while walking or looking around. Eased over time. */
+	public static float motion() {
+		return motion;
+	}
+
 	/** Peaks on each beat and eases to 0 before the next. The first beat of the bar peaks at 1, the others lower. */
 	public static float pulse() {
 		if (beatNow < 0) {
@@ -154,6 +174,10 @@ public final class MineAtDisco implements ClientModInitializer {
 	public static void frame(Consumer<SoundInstance> play) {
 		double now = source == 0 ? Double.MAX_VALUE : played();
 		beatNow = source == 0 ? -1 : BeatTracker.beatAt(beats, now - offset);
+		long nanos = System.nanoTime();
+		float elapsed = Math.min(0.1f, (nanos - lastFrame) / 1e9f);
+		lastFrame = nanos;
+		motion += (motionNow - motion) * (1 - (float) Math.exp(-elapsed / 0.3f));
 		int beat = (int) Math.floor(beatNow);
 		if (beat != lastBeat) {
 			lastBeat = beat;
@@ -306,6 +330,16 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 		client.getMusicManager().stopPlaying();
 		AL10.alSourcef(source, AL10.AL_GAIN, client.options.getFinalSoundSourceVolume(SoundSource.MUSIC));
+		LocalPlayer player = client.player;
+		if (player != null) {
+			// Walking pace or a turn of 15 degrees per tick counts as full motion.
+			double moved = player.position().distanceTo(lastPosition) / 0.2;
+			double turned = (Math.abs(Mth.wrapDegrees(player.getYRot() - lastYaw)) + Math.abs(player.getXRot() - lastPitch)) / 15;
+			motionNow = (float) Math.min(1, Math.max(moved, turned));
+			lastPosition = player.position();
+			lastYaw = player.getYRot();
+			lastPitch = player.getXRot();
+		}
 		if (client.isPaused() != paused) {
 			paused = !paused;
 			if (paused) {

@@ -6,13 +6,20 @@ import net.minecraft.client.Camera;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 
-/** Punches the camera in on the pulse. */
+/** Breathes the camera in and out with the bar. */
 @Mixin(Camera.class)
 public abstract class CameraMixin {
-	private static final float PUNCH = 0.05f;
+	private static final float ZOOM = 0.03f;
 
 	@ModifyReturnValue(method = "calculateFov", at = @At("RETURN"))
-	private float mineatdisco$punch(float fov) {
-		return fov * (1 - PUNCH * MineAtDisco.pulse());
+	private float mineatdisco$breathe(float fov) {
+		double beat = MineAtDisco.beat();
+		if (beat < 0) {
+			return fov;
+		}
+		// A cosine over two beats, closest on beats 1 and 3. A sudden zoom on a still view causes headaches,
+		// so the curve has no steps and fades out when the player stops moving.
+		float breath = 0.5f + 0.5f * (float) Math.cos(Math.PI * beat);
+		return fov * (1 - ZOOM * MineAtDisco.motion() * breath);
 	}
 }
