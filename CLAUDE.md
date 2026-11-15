@@ -10,7 +10,9 @@ These come from the owner and decide every feature.
 - Never worse than vanilla. Player input is never delayed and the tick rate is never changed. Only feedback moves to the grid: sounds, particles, animations.
 - Spectacle first: it should feel like a live TikTok edit and be worth clipping.
 - Effects scale with the song. Big in loud parts, calm in breaks (`drive()` goes from 0.25 to 1.25).
-- Animations follow the ramp. Every beat slows entity animations, cracks and the HUD down and then speeds them up into the next beat like a velocity edit. The camera and particle motion stay steady: bent on every beat they read as lag and as losing speed while running. Particles show the beat through when and where they spawn. Sounds and real positions keep their pace.
+- Visuals follow the ramp. Every beat slows entity animations, particle motion, cracks and the HUD down and then speeds them up into the next beat like a velocity edit. The camera stays steady: bent on every beat it read as losing speed while running. Sounds and real positions keep their pace.
+- Land on the satisfying parts. Repeated actions drift toward strong beats, and an action that lands on the beat pays off with a bigger burst, colored sparks and an answer on the HUD. Missing the beat costs nothing.
+- Change game timing only in a world this game runs. On a server the mod moves only visuals and sounds, so anticheats have nothing to flag.
 
 Tuning the owner asked for, in order:
 
@@ -24,9 +26,13 @@ Tuning the owner asked for, in order:
 8. Mining snaps to the beat. `MultiPlayerGameModeMixin` folds vanilla's 5-tick cooldown between blocks into the block's time, drives the crack stages (`0..9`) with the ramped visual beat, and finishes breaking right on the beat so fast mining (such as Efficiency V on stone) breaks one block per beat without drifting or skipping beats.
 9. The D-I-S-C-O flow meter and DISCO mode were tried and dropped: they looked flat and added nothing to the experience.
 10. Combat snaps to the beat without delaying player input. Player attacks deal damage at once, while the mob's red flash, hurt or death sound and spark burst land on the next eighth note (bigger with a sweep flash when clicked on the beat). Melee mobs play a warning cue on the eighth note before the beat and strike on the beat, creepers hold at full swell until the beat, shields raise with no 5-tick delay, and raising a shield right before a hit lands a perfect parry that blasts the attacker back and ignores axe shield-disable.
-11. Pressing `M` (or running `/disco` with no arguments) opens the in-world song picker and calibration screen without pausing the game or covering the crosshair square. Pressing `B` in-game (or `Space` inside the menu, or `/disco tap`) taps in time with the music to calibrate audio offset on the fly. The menu and `/disco x2` / `/disco half` also nudge the offset by 10 ms or double/halve the beat grid when a song's tempo reads half or double.
+11. Pressing `M` (or running `/disco` with no arguments) opens the in-world song picker and calibration screen without pausing the game or covering the beat cue around the crosshair. Pressing `B` in-game (or `Space` inside the menu, or `/disco tap`) taps in time with the music to calibrate audio offset on the fly. The menu and `/disco x2` / `/disco half` also nudge the offset by 10 ms or double/halve the beat grid when a song's tempo reads half or double.
 12. While running and jumping the view seemed to lose speed every other beat. The FOV narrowed on beats 1 and 3 and followed the ramp, and every particle nearly froze on each beat. The camera now kicks a little wider on the steady beat and follows the FOV Effects slider, and particle motion no longer bends.
 13. The particle effects looked poor: every particle in the world swelled on the beat, and the chips used vanilla's spawn, which randomizes speed and leaves them limp. The swell is gone, chips and bursts fly with exact velocities (`spawn()`), break bursts are no longer tripled, colored sparks mark breaks on beats 1 and 3, and extra particles follow the Particles setting.
+14. The owner liked particles hanging and flying with the ramp, so particle motion bends with every beat again. Only the camera stays steady.
+15. Repeated actions settle onto strong beats. `BeatTracker.landing` picks the break beat near vanilla's time but pulls it toward beat 1 for bar-long blocks and beats 1 and 3 for two-beat blocks, by at most 30% of the block's time per break, so a chain locks onto the downbeat within a couple of blocks.
+16. The HUD got a full pass: four brackets fly in and land on the beat (gold before beat 1), a ring opens where they land, the bar pips pop, the hotbar and bars bounce smoothly in a wave from left to right, and breaking, placing or hitting on the beat answers with sparks in the phrase's disco color.
+17. Multiplayer: mining pacing and the instant shield only run in a world this game hosts, mob timing and parries only in one not open to LAN. On servers the mod is visual and sound only.
 
 ## Code map
 
@@ -35,14 +41,14 @@ Tuning the owner asked for, in order:
 - `mixin/SoundEngineMixin` holds world sounds until the next grid line and calls `frame()` once per frame.
 - `mixin/ClientLevelMixin` takes over the mining hit effect and the block break burst. `mixin/MultiPlayerGameModeMixin` paces block breaking and cracks to the beat and hooks player attacks.
 - `mixin/LivingEntityMixin` holds mob hurt and death visuals until the next eighth note, removes the 5-tick shield delay while music plays, and handles perfect parries. `mixin/MeleeAttackGoalMixin` holds melee mob strikes until the beat after a pre-beat warning cue, and `mixin/CreeperMixin` holds creeper detonations until the beat.
-- `mixin/LivingEntityRendererMixin` is the mob and player dance and bends walk, hand-swing and death animations during a ramp. `mixin/EntityRendererMixin` bends entity animation during a ramp. `mixin/CameraMixin` is the FOV kick. `mixin/FallingLeavesInvoker` sheds leaves.
+- `mixin/LivingEntityRendererMixin` is the mob and player dance and bends walk, hand-swing and death animations during a ramp. `mixin/EntityRendererMixin` bends entity animation during a ramp. `mixin/CameraMixin` is the FOV kick and `mixin/ParticleMixin` bends particle motion during a ramp. `mixin/FallingLeavesInvoker` sheds leaves.
 - User-facing text lives in `assets/mineatdisco/lang/en_us.json`. Never hardcode a string the player sees.
 
 ## Timing
 
 - `played()` is the audio position: OpenAL's sample offset, smoothed with the system clock because OpenAL updates it about every 20 ms.
 - Sounds follow the audio position. Visuals follow `played() - offset`, which `/disco offset`, tapping `B` in-game, or tapping `Space` in the menu calibrates for output latency.
-- `beat()` is the visual beat with the ramp applied, and `beatSteady()` the same without it. Animations read `beat()` or `lagTicks()`, the camera and impact effects read `beatSteady()`, and no visual reads the audio clock. Mining is split: the hit sound plays on the audio eighth note, the chips on the steady visual one, the cracks on the ramped beat.
+- `beat()` is the visual beat with the ramp applied, and `beatSteady()` the same without it. Animations read `beat()`, `particleSpeed()` or `lagTicks()`, the camera and impact effects read `beatSteady()`, and no visual reads the audio clock. Mining is split: the hit sound plays on the audio eighth note, the chips on the steady visual one, the cracks on the ramped beat.
 - `beat()` counts from the first beat of a phrase: `beat % 4` is the position in the bar, `beat % 8` in the phrase. During a velocity ramp it lags behind the real beat and then catches up.
 - Grid: footsteps, combat, mining and breaking fall on eighth notes, other world sounds on the next sixteenth. A sound in the first 20% of a grid step plays at once.
 
