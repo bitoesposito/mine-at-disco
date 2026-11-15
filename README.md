@@ -28,7 +28,7 @@ While a song plays:
 
 `/disco stop` stops the music.
 
-To follow music from Spotify, a browser or any other player, choose **System audio** in the `M` menu (or run `/disco live`) and play something. The mod listens to what Windows plays, finds the beat in about five seconds and keeps following it, predicting the next beats so the game stays on time. Local `.ogg` songs still track best, since the whole song is analysed before it starts. Live mode needs Windows.
+To follow music from Spotify, a browser or any other player, choose `System audio` in the `M` menu (or run `/disco live`) and play something. The mod listens to what Windows plays, finds the beat in about five seconds and keeps following it, predicting the next beats so the game stays on time. Local `.ogg` songs still track best, since the whole song is analysed before it starts. Live mode needs Windows.
 
 If a song's tempo reads half or double, click `/2` or `x2` in the menu (or run `/disco half` or `/disco x2`).
 
