@@ -114,6 +114,8 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static double[] beats = {};
 	/** Loudness of each beat next to the rest of the song, 0 to 1. */
 	private static float[] energy = {};
+	/** Beats where the band comes back after a quiet stretch, see BeatTracker.drops. */
+	private static boolean[] drops = {};
 	private static boolean paused;
 	/** Largest (audio position - system clock) seen since the last start or resume, see played(). */
 	private static double anchor;
@@ -676,7 +678,9 @@ public final class MineAtDisco implements ClientModInitializer {
 		if (beat != lastBeat) {
 			lastBeat = beat;
 			telegraphedMobs.clear();
-			if (beat >= 0 && beat % 4 == 0) {
+			if (beat >= 0 && beat < drops.length && drops[beat]) {
+				drop();
+			} else if (beat >= 0 && beat % 4 == 0) {
 				shedLeaves(beat % BeatTracker.PHRASE == 0 ? 2 : 1);
 			}
 		}
@@ -830,6 +834,30 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 	}
 
+	/** The band is back: a rainbow ring rolls out from the player, fireworks go up around them and the trees let go. */
+	private static void drop() {
+		Minecraft client = Minecraft.getInstance();
+		if (client.level == null || client.player == null) {
+			return;
+		}
+		flashHud(1);
+		shedLeaves(4);
+		Vec3 feet = client.player.position();
+		int ring = amount(48 * drive());
+		for (int i = 0; i < ring; i++) {
+			double angle = 2 * Math.PI * i / ring;
+			spawn(new DustParticleOptions(Mth.hsvToRgb((float) i / ring, 0.7f, 1), 1.5f), feet.x, feet.y + 0.2, feet.z,
+					Math.cos(angle) * 0.4, 0.02, Math.sin(angle) * 0.4);
+		}
+		// Three blocks out, so the rockets frame the view instead of flying through the camera.
+		RandomSource random = client.level.getRandom();
+		for (int i = amount(12 * drive()); i > 0; i--) {
+			double angle = random.nextDouble() * 2 * Math.PI;
+			spawn(ParticleTypes.FIREWORK, feet.x + Math.cos(angle) * 3, feet.y + 0.5, feet.z + Math.sin(angle) * 3,
+					(random.nextDouble() - 0.5) * 0.1, 0.4 + 0.2 * random.nextDouble(), (random.nextDouble() - 0.5) * 0.1);
+		}
+	}
+
 	/** Dust kicked out along the ground from a block the player just placed, more when the song is loud. */
 	private static void puff(double x, double y, double z) {
 		ClientLevel level = Minecraft.getInstance().level;
@@ -959,6 +987,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		} else {
 			return;
 		}
+		drops = BeatTracker.drops(energy);
 		lastBeat = -1;
 		lastEighth = -1;
 		lastVisualEighth = -1;
@@ -1047,6 +1076,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		sampleRate = song.sampleRate();
 		beats = song.beats();
 		energy = song.energy();
+		drops = BeatTracker.drops(energy);
 		paused = false;
 		anchor = Double.NEGATIVE_INFINITY;
 	}
@@ -1070,6 +1100,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		source = 0;
 		currentSong = "";
 		beats = new double[0];
+		drops = new boolean[0];
 		audioBeatNow = -1;
 		telegraphedMobs.clear();
 		crackPos = null;

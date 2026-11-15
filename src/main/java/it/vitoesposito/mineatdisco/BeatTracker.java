@@ -178,6 +178,30 @@ public final class BeatTracker {
 		return energy;
 	}
 
+	/**
+	 * Marks the bars where the band comes back after a quiet stretch: the first beat of a bar whose next four beats are
+	 * loud after eight quiet ones. Two drops sit at least four bars apart.
+	 */
+	public static boolean[] drops(float[] energy) {
+		boolean[] drops = new boolean[energy.length];
+		int last = -16;
+		for (int i = 8; i + 4 <= energy.length; i += 4) {
+			float before = 0;
+			float after = 0;
+			for (int k = 0; k < 8; k++) {
+				before += energy[i - 8 + k] / 8;
+			}
+			for (int k = 0; k < 4; k++) {
+				after += energy[i + k] / 4;
+			}
+			if (before <= 0.4f && after >= 0.55f && i - last >= 16) {
+				drops[i] = true;
+				last = i;
+			}
+		}
+		return drops;
+	}
+
 	/** Returns the beat index plus the phase within that beat, or -1 outside the tracked beats. */
 	public static double beatAt(double[] beats, double seconds) {
 		int i = Arrays.binarySearch(beats, seconds);
@@ -292,6 +316,16 @@ public final class BeatTracker {
 		float[] loudness = energy(ShortBuffer.wrap(wave), 1, rate, grid);
 		check(loudness[2] < 0.01 && loudness[19] < 0.01, "quiet half should be near 0");
 		check(loudness[20] > 0.99 && loudness[39] > 0.99, "loud half should be near 1");
+
+		// Loud, a break, the band back at beat 40, a short dip and back again at 52, too soon for a second drop.
+		float[] song = new float[64];
+		for (int i = 0; i < song.length; i++) {
+			song[i] = i < 24 || i >= 40 && i < 48 || i >= 52 ? 0.9f : 0.1f;
+		}
+		boolean[] drops = drops(song);
+		for (int i = 0; i < song.length; i++) {
+			check(drops[i] == (i == 40), "drop at beat " + i + " should be " + (i == 40));
+		}
 
 		check(landing(5.6, 1) == 5 && landing(5.8, 1) == 6, "a short action waits at most a quarter beat");
 		check(landing(1.57, 1.57) == 1, "diamond pickaxe on stone keeps one block per beat");
