@@ -5,6 +5,7 @@ import static net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import it.vitoesposito.mineatdisco.mixin.FallingLeavesInvoker;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
@@ -32,10 +33,12 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.resources.sounds.SoundInstance;
 import net.minecraft.client.resources.sounds.TickableSoundInstance;
 import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.ARGB;
+import net.minecraft.util.RandomSource;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.openal.AL11;
 import org.lwjgl.stb.STBVorbis;
@@ -47,10 +50,12 @@ import org.lwjgl.system.libc.LibCStdlib;
 public final class MineAtDisco implements ClientModInitializer {
 	private static final Path SONGS = FabricLoader.getInstance().getGameDir().resolve("disco");
 	private static final Path OFFSET_FILE = SONGS.resolve("offset.txt");
-	/** World sounds wait for one of this many grid lines per beat. */
-	private static final int GRID = 4;
 	/** A sound this soon after a grid line, as a share of a grid step, plays at once. */
 	private static final double ON_GRID = 0.2;
+	/** How hard each beat of the bar hits. The first beat leads, the third answers. */
+	private static final float[] ACCENT = {1, 0.4f, 0.7f, 0.4f};
+	private static final float HUD_HOP = 4;
+	private static final int GOLD = 0xFFD040;
 	private static final Set<SoundSource> WORLD_SOUNDS =
 			EnumSet.of(SoundSource.BLOCKS, SoundSource.PLAYERS, SoundSource.HOSTILE, SoundSource.NEUTRAL);
 
@@ -72,10 +77,9 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static double offset;
 	/** Counts play and stop requests, so a song that finishes loading late knows it was replaced. */
 	private static int request;
-	/** Beats per pulse: 2 for fast songs, where moving on every beat looks frantic. */
-	private static int stride = 1;
 	/** Beat position for this frame, -1 outside the tracked beats. Saves asking OpenAL once per entity. */
 	private static double beatNow = -1;
+	private static int lastBeat = -1;
 	private static final List<Deferred> deferred = new ArrayList<>();
 	private static boolean releasing;
 
@@ -90,6 +94,18 @@ public final class MineAtDisco implements ClientModInitializer {
 		ClientTickEvents.END_CLIENT_TICK.register(MineAtDisco::tick);
 		HudElementRegistry.attachElementAfter(VanillaHudElements.CROSSHAIR,
 				Identifier.fromNamespaceAndPath("mineatdisco", "beat"), MineAtDisco::drawBeat);
+		// The hotbar and the status bars hop with the pulse.
+		for (Identifier element : List.of(VanillaHudElements.HOTBAR, VanillaHudElements.HEALTH_BAR,
+				VanillaHudElements.ARMOR_BAR, VanillaHudElements.FOOD_BAR, VanillaHudElements.AIR_BAR,
+				VanillaHudElements.MOUNT_HEALTH, VanillaHudElements.INFO_BAR, VanillaHudElements.EXPERIENCE_LEVEL,
+				VanillaHudElements.INFO_BAR_FOREGROUND)) {
+			HudElementRegistry.replaceElement(element, original -> (gui, delta) -> {
+				gui.pose().pushMatrix();
+				gui.pose().translate(0, -HUD_HOP * pulse());
+				original.extractRenderState(gui, delta);
+				gui.pose().popMatrix();
+			});
+		}
 		ClientCommandRegistrationCallback.EVENT.register((dispatcher, context) -> dispatcher.register(literal("disco")
 				.then(literal("play").then(argument("song", StringArgumentType.greedyString())
 						.suggests((command, builder) -> SharedSuggestionProvider.suggest(songs(), builder))
@@ -103,14 +119,13 @@ public final class MineAtDisco implements ClientModInitializer {
 						.executes(command -> setOffset(command.getSource(), IntegerArgumentType.getInteger(command, "ms")))))));
 	}
 
-	/** 1 on the pulse, easing to 0 before the next one. */
+	/** Peaks on each beat and eases to 0 before the next. The first beat of the bar peaks at 1, the others lower. */
 	public static float pulse() {
 		if (beatNow < 0) {
 			return 0;
 		}
-		// ponytail: which beat of a pair carries the pulse is arbitrary. Pick the louder one if it looks off.
-		double left = 1 - beatNow / stride % 1;
-		return (float) (left * left);
+		double left = 1 - beatNow % 1;
+		return ACCENT[(int) beatNow % 4] * (float) (left * left);
 	}
 
 	/**
@@ -123,12 +138,15 @@ public final class MineAtDisco implements ClientModInitializer {
 				|| sound.isLooping() || sound instanceof TickableSoundInstance) {
 			return false;
 		}
+		// Mining and footsteps repeat, so they keep steady eighth notes. One-shots take the next sixteenth.
+		String name = sound.getIdentifier().getPath();
+		int lines = name.endsWith(".hit") || name.endsWith(".step") ? 2 : 4;
 		// Sounds share the song's output latency, so they follow the audio position without the offset.
-		double grid = BeatTracker.beatAt(beats, played()) * GRID;
+		double grid = BeatTracker.beatAt(beats, played()) * lines;
 		if (grid < 0 || grid % 1 < ON_GRID) {
 			return false;
 		}
-		deferred.add(new Deferred(sound, BeatTracker.timeAt(beats, Math.ceil(grid) / GRID)));
+		deferred.add(new Deferred(sound, BeatTracker.timeAt(beats, Math.ceil(grid) / lines)));
 		return true;
 	}
 
@@ -136,6 +154,13 @@ public final class MineAtDisco implements ClientModInitializer {
 	public static void frame(Consumer<SoundInstance> play) {
 		double now = source == 0 ? Double.MAX_VALUE : played();
 		beatNow = source == 0 ? -1 : BeatTracker.beatAt(beats, now - offset);
+		int beat = (int) Math.floor(beatNow);
+		if (beat != lastBeat) {
+			lastBeat = beat;
+			if (beat >= 0 && beat % 4 == 0) {
+				shedLeaves(beat % BeatTracker.PHRASE == 0 ? 2 : 1);
+			}
+		}
 		if (deferred.isEmpty()) {
 			return;
 		}
@@ -150,6 +175,24 @@ public final class MineAtDisco implements ClientModInitializer {
 			});
 		} finally {
 			releasing = false;
+		}
+	}
+
+	/** Trees around the player drop leaves on the first beat of each bar, more when a phrase opens. */
+	private static void shedLeaves(int strength) {
+		Minecraft client = Minecraft.getInstance();
+		if (client.level == null || client.player == null) {
+			return;
+		}
+		RandomSource random = client.level.getRandom();
+		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+		for (int i = 0; i < 300 * strength; i++) {
+			pos.setWithOffset(client.player.blockPosition(),
+					random.nextInt(25) - 12, random.nextInt(17) - 4, random.nextInt(25) - 12);
+			if (client.level.getBlockState(pos).getBlock() instanceof FallingLeavesInvoker leaves
+					&& client.level.getBlockState(pos.below()).isAir()) {
+				leaves.mineatdisco$shed(client.level, pos, random);
+			}
 		}
 	}
 
@@ -229,7 +272,6 @@ public final class MineAtDisco implements ClientModInitializer {
 		AL10.alSourcePlay(source);
 		sampleRate = song.sampleRate();
 		beats = song.beats();
-		stride = BeatTracker.bpm(beats) > 150 ? 2 : 1;
 		paused = false;
 		anchor = Double.NEGATIVE_INFINITY;
 	}
@@ -289,7 +331,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		return played;
 	}
 
-	/** A square that closes on the crosshair and lands on the beat. */
+	/** A square that closes on the crosshair and lands on the beat, over four pips that count the bar. */
 	private static void drawBeat(GuiGraphicsExtractor gui, DeltaTracker delta) {
 		if (beatNow < 0) {
 			return;
@@ -297,6 +339,15 @@ public final class MineAtDisco implements ClientModInitializer {
 		float phase = (float) (beatNow % 1);
 		int size = 9 + 2 * Math.round(12 * (1 - phase));
 		gui.outline((gui.guiWidth() - size) / 2, (gui.guiHeight() - size) / 2, size, size, ARGB.white(0.2f + 0.8f * phase));
+
+		int now = (int) beatNow % 4;
+		int y = gui.guiHeight() / 2 + 24;
+		for (int pip = 0; pip < 4; pip++) {
+			int x = gui.guiWidth() / 2 + (pip * 2 - 3) * 6;
+			int half = pip == now ? 3 : 1;
+			int color = (pip == now ? 0xFF000000 : 0x80000000) | (pip == 0 ? GOLD : 0xFFFFFF);
+			gui.fill(x - half, y - half, x + half, y + half, color);
+		}
 	}
 
 	private static int setOffset(FabricClientCommandSource command, int ms) {

@@ -3,7 +3,10 @@
 	"package": "it.vitoesposito.mineatdisco.mixin",
 	"compatibilityLevel": "JAVA_25",
 	"client": [
+		"CameraMixin",
+		"FallingLeavesInvoker",
 		"LivingEntityRendererMixin",
+		"SingleQuadParticleMixin",
 		"SoundEngineMixin"
 	],
 	"injectors": {
