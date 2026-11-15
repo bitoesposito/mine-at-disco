@@ -366,7 +366,7 @@ public final class MineAtDisco implements ClientModInitializer {
 	 * Like a velocity edit, every beat slows the visuals down and then speeds them up so they slam into the next beat.
 	 * The music keeps its pace: only the visual beat, particles, cracks and animations bend. Speed follows
 	 * 1 - depth * sin, so it starts and ends each beat without a jump and lands right on the real beat.
-	 * ponytail: animated textures (water, lava, fire), clouds and the first-person hand still run at normal speed.
+	 * ponytail: animated textures (water, lava, fire) and clouds still run at normal speed.
 	 * Bend their clocks by lagTicks() the same way if they stand out.
 	 */
 	private static void ramp() {

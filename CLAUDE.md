@@ -22,6 +22,7 @@ Tuning the owner asked for, in order:
 6. The FOV breath came back down to 9% at full loudness: 15% felt too strong while moving.
 7. Every beat runs a velocity ramp: the visual beat, particles, cracks and entity animations slow down after the beat, then whip forward and land on the next beat. The music never changes pace.
 8. Mining snaps to the beat. `MultiPlayerGameModeMixin` folds vanilla's 5-tick cooldown between blocks into the block's time, drives the crack stages (`0..9`) with the ramped visual beat, and finishes breaking right on the beat so fast mining (such as Efficiency V on stone) breaks one block per beat without drifting or skipping beats.
+9. The D-I-S-C-O flow meter and DISCO mode were tried and dropped: they looked flat and added nothing to the experience.
 
 ## Code map
 
@@ -29,7 +30,7 @@ Tuning the owner asked for, in order:
 - `MineAtDisco.java` holds everything else: `/disco play|stop|offset`, playback on the mod's own OpenAL source, the audio clock, the sound grid, mining, breaking and placing effects, leaves, the HUD.
 - `mixin/SoundEngineMixin` holds world sounds until the next grid line and calls `frame()` once per frame.
 - `mixin/ClientLevelMixin` takes over the mining hit effect and the block break burst. `mixin/MultiPlayerGameModeMixin` paces block breaking and cracks to the beat.
-- `mixin/LivingEntityRendererMixin` is the mob and player dance. `mixin/EntityRendererMixin` bends entity animation during a ramp. `mixin/CameraMixin` is the FOV breath. `mixin/SingleQuadParticleMixin` swells particles and `mixin/ParticleMixin` bends their motion during a ramp. `mixin/FallingLeavesInvoker` sheds leaves.
+- `mixin/LivingEntityRendererMixin` is the mob and player dance and bends walk and hand-swing animations during a ramp. `mixin/EntityRendererMixin` bends entity animation during a ramp. `mixin/CameraMixin` is the FOV breath. `mixin/SingleQuadParticleMixin` swells particles and `mixin/ParticleMixin` bends their motion during a ramp. `mixin/FallingLeavesInvoker` sheds leaves.
 - User-facing text lives in `assets/mineatdisco/lang/en_us.json`. Never hardcode a string the player sees.
 
 ## Timing
@@ -61,7 +62,6 @@ Tuning the owner asked for, in order:
 
 ## Open ideas
 
-- A Flow meter that lights D-I-S-C-O as the player acts on the beat.
 - Leaves that sway on the beat. This needs a terrain shader, and Sodium needs its own.
 - A song picker screen, tap-to-calibrate, and a x2 or /2 fix for songs whose tempo reads double or half.
 - Combat: hits that land on the beat, mob attacks on the beat, a perfect parry.

@@ -5,8 +5,10 @@ import com.mojang.math.Axis;
 import it.vitoesposito.mineatdisco.MineAtDisco;
 import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.entity.LivingEntityRenderer;
+import net.minecraft.client.renderer.entity.state.ArmedEntityRenderState;
 import net.minecraft.client.renderer.entity.state.LivingEntityRenderState;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.LivingEntity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -40,8 +42,11 @@ public abstract class LivingEntityRendererMixin {
 			method = "extractRenderState(Lnet/minecraft/world/entity/LivingEntity;Lnet/minecraft/client/renderer/entity/state/LivingEntityRenderState;F)V",
 			at = @At("TAIL"))
 	private void mineatdisco$nod(LivingEntity entity, LivingEntityRenderState state, float partialTick, CallbackInfo info) {
-		// Legs follow the ramp like the rest of the animation, see EntityRendererMixin.
+		// Legs and arm swings (including the first-person hand) follow the ramp, see EntityRendererMixin.
 		state.walkAnimationPos -= MineAtDisco.lagTicks() * state.walkAnimationSpeed;
+		if (state instanceof ArmedEntityRenderState armed && armed.swingAnimation > 0) {
+			armed.swingAnimation = Mth.clamp(entity.getSwingAnimation(partialTick - MineAtDisco.lagTicks()), 0.01f, 0.99f);
+		}
 		double beat = MineAtDisco.beat();
 		if (beat >= 0) {
 			state.xRot += NOD_DEGREES * MineAtDisco.drive() * (0.5f + 0.5f * bounce(beat));
