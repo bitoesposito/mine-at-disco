@@ -12,6 +12,7 @@
 		"LivingEntityRendererMixin",
 		"MeleeAttackGoalMixin",
 		"MultiPlayerGameModeMixin",
+		"ParticleMixin",
 		"SoundEngineMixin"
 	],
 	"injectors": {

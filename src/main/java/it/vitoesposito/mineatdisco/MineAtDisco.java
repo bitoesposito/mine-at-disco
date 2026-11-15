@@ -128,6 +128,7 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static float energyNow;
 	/** Visual beat without the ramp. */
 	private static double beatRaw = -1;
+	private static float particleSpeed = 1;
 	private static float lagTicks;
 	/**
 	 * Whether this game runs the world itself, and whether it runs it alone (not open to LAN). Timing changes need the
@@ -230,6 +231,11 @@ public final class MineAtDisco implements ClientModInitializer {
 	/** Visual beat without the ramp. The camera and impact effects use it, since bending them reads as lag. */
 	public static double beatSteady() {
 		return beatRaw;
+	}
+
+	/** How fast particles move: 1 normally, below 1 after the beat, above 1 while catching up with the next one. */
+	public static float particleSpeed() {
+		return particleSpeed;
 	}
 
 	/** Ticks the visuals run behind real time during a ramp, 0 outside one. Entity animations subtract it. */
@@ -358,7 +364,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 		playImmediate(SoundEvents.NOTE_BLOCK_HAT.value(), SoundSource.HOSTILE, 0.85f * drive(), 1.75f,
 				entity.getX(), entity.getY(), entity.getZ());
-		burst(entity, ParticleTypes.CRIT, 6);
+		burst(entity, ParticleTypes.CRIT, amount(6));
 	}
 
 	/**
@@ -377,7 +383,7 @@ public final class MineAtDisco implements ClientModInitializer {
 			ClientLevel level = Minecraft.getInstance().level;
 			Entity hit = level == null ? null : level.getEntity(id);
 			if (hit != null) {
-				burst(hit, ParticleTypes.CRIT, Math.round((onBeat ? 18 : 8) * drive()));
+				burst(hit, ParticleTypes.CRIT, amount((onBeat ? 18 : 8) * drive()));
 				if (onBeat) {
 					level.addParticle(ParticleTypes.SWEEP_ATTACK, hit.getX(), hit.getY(0.5), hit.getZ(), 0, 0, 0);
 				}
@@ -441,8 +447,8 @@ public final class MineAtDisco implements ClientModInitializer {
 		playImmediate(SoundEvents.BELL_BLOCK, SoundSource.PLAYERS, 0.9f * drive(), 1.5f,
 				center.getX(), center.getY(), center.getZ());
 		client.level.addParticle(ParticleTypes.SWEEP_ATTACK, center.getX(), center.getY(0.5), center.getZ(), 0, 0, 0);
-		burst(center, ParticleTypes.CRIT, Math.round(20 * drive()));
-		burst(center, ParticleTypes.ENCHANTED_HIT, Math.round(14 * drive()));
+		burst(center, ParticleTypes.CRIT, amount(20 * drive()));
+		burst(center, ParticleTypes.ENCHANTED_HIT, amount(14 * drive()));
 	}
 
 	private static void playImmediate(SoundEvent sound, SoundSource category, float volume, float pitch,
@@ -597,17 +603,19 @@ public final class MineAtDisco implements ClientModInitializer {
 	 * Like a velocity edit, every beat slows the animations down and then speeds them up so they slam into the next
 	 * beat. The music keeps its pace: only the visual beat, cracks, HUD and entity animations bend. Speed follows
 	 * 1 - depth * sin, so it starts and ends each beat without a jump and lands right on the real beat.
-	 * The camera and particle motion stay out of it: bent every beat, they read as the game losing speed.
+	 * Particle motion bends too. The camera stays out of it: bent every beat, it read as the game losing speed.
 	 */
 	private static void ramp() {
 		if (beatRaw < 0) {
 			beatNow = -1;
+			particleSpeed = 1;
 			lagTicks = 0;
 			return;
 		}
 		double u = beatRaw % 1;
 		float depth = 0.4f + 0.45f * energyNow;
 		beatNow = beatRaw + depth * (Math.cos(2 * Math.PI * u) - 1) / (2 * Math.PI);
+		particleSpeed = 1 - depth * (float) Math.sin(2 * Math.PI * u);
 		lagTicks = (float) (20 * (BeatTracker.timeAt(beats, beatRaw) - BeatTracker.timeAt(beats, beatNow)));
 	}
 
