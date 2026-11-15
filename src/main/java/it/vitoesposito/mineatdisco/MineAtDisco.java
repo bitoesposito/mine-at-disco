@@ -1051,6 +1051,7 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static final class DiscoScreen extends Screen {
 		private static final int PAGE_SIZE = 4;
 		private int page;
+		private List<String> list = List.of();
 
 		private DiscoScreen() {
 			super(Component.translatable("mineatdisco.menu.title"));
@@ -1080,7 +1081,7 @@ public final class MineAtDisco implements ClientModInitializer {
 			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.stop"),
 					b -> stop()).bounds(cx + 104, top, 52, 20).build());
 
-			List<String> list = songs();
+			list = songs();
 			int pages = Math.max(1, (list.size() + PAGE_SIZE - 1) / PAGE_SIZE);
 			page = Mth.clamp(page, 0, pages - 1);
 			int listTop = height / 2 + 38;
@@ -1117,7 +1118,7 @@ public final class MineAtDisco implements ClientModInitializer {
 			gui.centeredText(font, status, cx, 11, 0xFFFFFFFF);
 			gui.centeredText(font, Component.translatable("mineatdisco.menu.offset", Math.round(offset * 1000)),
 					cx, 23, 0xFFFFD040);
-			if (songs().isEmpty()) {
+			if (list.isEmpty()) {
 				gui.centeredText(font, Component.translatable("mineatdisco.menu.empty", SONGS.toString()),
 						cx, height / 2 + 44, 0xFFCCCCCC);
 			}
