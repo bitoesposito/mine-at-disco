@@ -28,6 +28,8 @@ While a song plays:
 
 `/disco stop` stops the music.
 
+To follow music from Spotify, a browser or any other player, choose **System audio** in the `M` menu (or run `/disco live`) and play something. The mod listens to what Windows plays, finds the beat in about five seconds and keeps following it, predicting the next beats so the game stays on time. Local `.ogg` songs still track best, since the whole song is analysed before it starts. Live mode needs Windows.
+
 If a song's tempo reads half or double, click `/2` or `x2` in the menu (or run `/disco half` or `/disco x2`).
 
 The mod reads your audio device's latency from OpenAL and keeps the visuals on what you hear, so most setups need no calibration. If the brackets still land before you hear the beat, which is common with Bluetooth headphones, tap `B` while playing (or `Space` inside the `M` menu) in time with the music, or set the delay with `/disco offset <ms>`. A negative value makes it earlier. After you hit mobs or place blocks on the beat for a while, the `M` menu also suggests an offset from your own timing.

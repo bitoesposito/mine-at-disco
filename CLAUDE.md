@@ -43,11 +43,13 @@ Tuning the owner asked for, in order:
 25. Calibration works like lazer's. Tapping skips two warm-up taps and takes the median of the last 16, so a stray tap moves nothing. Hits and used blocks within a quarter beat of a beat are logged, and after 16 of them the menu suggests the offset that centers them, with an Apply button, like lazer's suggested offset from hit errors.
 26. Visuals follow the drums the song really plays. `BeatTracker.punch` precomputes, 100 times a second, how fast the bass level climbs (a kick, not the sustained bass line that sits on merengue's off-beats), with the rise and fall of lazer's logo visualiser. The HUD bounce reads it on the ramped visual time, the bracket ring brightens with it, and the camera kick scales by the punch of the beat that opens its cycle.
 27. The beat tracker also weighs how fast the bass climbs, so beats sit on the kicks and tracking starts when the band does instead of in a beatless intro. A mining knock or a bite noticed more than two 60 fps frames late, after a hitch, is skipped instead of played off the beat, like lazer's mistimed allowance.
+28. Live mode follows any music the PC plays. Spotify stopped giving new apps its audio analysis in November 2024, its audio is DRM-protected, YouTube Music has no audio API, and OpenAL Soft can't capture system audio on Windows, so the mod captures the speakers itself: `LoopbackCapture` opens WASAPI loopback through JNA (shipped with Minecraft). Its packet timestamps share `System.nanoTime`'s clock and mark when the speakers play each sample, so live song time is heard time. `LiveBeat` reruns `BeatTracker` on the last 12 s twice a second, freezes beats older than 1 s, predicts 8 ahead and moves the phrase start only after 3 updates agree. `LivePunch` computes the kick curve per frame on new samples. Tested on Windows with the song played by the system player: locked on about 5 s after the music started, at 169 to 172 BPM (the song is 171), 2 to 3 ms per update.
 
 ## Code map
 
 - `BeatTracker.java` finds beats (onset envelope, tempo by autocorrelation, dynamic programming after Ellis 2007), shifts them so beat 0 opens a phrase, and measures each beat's loudness. `main` is a self-check with a synthetic click track.
 - `MineAtDisco.java` holds everything else: `/disco` (menu, `play`, `stop`, `offset`, `tap`, `x2`, `half`), the `M` and `B` keybinds and `DiscoScreen`, playback on the mod's own OpenAL source, the audio clock, the sound grid, mining, combat, breaking and placing effects, leaves, the HUD.
+- `LoopbackCapture` captures what Windows plays (WASAPI loopback via JNA), `LiveBeat` turns it into a beat timeline twice a second and `LivePunch` into the kick curve every frame. Self-check: `java it/vitoesposito/mineatdisco/LiveBeat.java` from `src/main/java`. `LoopbackCapture.main` is a manual check to run with Windows Java and the JNA jars.
 - `mixin/SoundEngineMixin` holds world sounds until the next grid line and calls `frame()` once per frame.
 - `mixin/ClientLevelMixin` takes over the mining hit effect and the block break burst. `mixin/MultiPlayerGameModeMixin` paces block breaking and cracks to the beat and hooks player attacks. `mixin/ItemStackMixin` turns off vanilla chewing so the mod can bite on the beat. `mixin/ClientPacketListenerMixin` and `mixin/LevelEventHandlerMixin` hold thrown item and splash potion bursts for the grid.
 - `mixin/LivingEntityMixin` holds mob hurt visuals until the next eighth note and deaths until the next beat, removes the 5-tick shield delay while music plays, and handles perfect parries. `mixin/MeleeAttackGoalMixin` holds melee mob strikes until the beat after a pre-beat warning cue, and `mixin/CreeperMixin` holds creeper detonations until the beat.
@@ -59,6 +61,7 @@ Tuning the owner asked for, in order:
 - `played()` is the mixer position, smoothed by `AudioClock` the way osu-framework's InterpolatingFramedClock does: real time between OpenAL readings, an 80 ms half-life pull toward each fresh reading (which also cancels sound card drift), a jump past 33 ms of error, never backwards. Its self-check runs with `java src/main/java/it/vitoesposito/mineatdisco/AudioClock.java`.
 - OpenAL Soft's `AL_SOFT_source_latency` reports the mixer-to-speaker latency, which lazer instead guesses with a fixed platform offset. Visuals follow `visualTime()`: mixer position minus that latency, plus one frame (a frame drawn now shows up a frame later, like lazer's early activation), minus the player's offset. The offset now only covers delay OpenAL can't see, such as Bluetooth, and lives in `disco/audio-offset.txt`.
 - Sounds the mod plays share the song's latency, so they follow `played()` directly.
+- In live mode song time is heard time, from the capture's timestamps. `played()` runs one OpenAL device latency (`ALC_SOFT_device_clock`) ahead of it, so the mod's own sounds still land on the beat, and the game's pause doesn't stop the music.
 - `beat()` is the visual beat with the ramp applied, and `beatSteady()` the same without it. Animations read `beat()`, `particleSpeed()` or `lagTicks()`, the camera and impact effects read `beatSteady()`, and no visual reads the audio clock. Mining is split: the hit sound plays on the audio eighth note, the chips on the steady visual one, the cracks on the ramped beat.
 - `beat()` counts from the first beat of a phrase: `beat % 4` is the position in the bar, `beat % 8` in the phrase. During a velocity ramp it lags behind the real beat and then catches up.
 - Grid: footsteps, combat, mining and breaking fall on eighth notes, other world sounds on the next sixteenth. A sound in the first 20% of a grid step plays at once.
@@ -85,7 +88,8 @@ Tuning the owner asked for, in order:
 ## Open ideas
 
 - Multiplayer support so players in the same world hear and see the same beat grid in sync.
-- Connecting Spotify and YouTube Music so the mod can sync to streamed music, not only local `.ogg` files.
+- Spotify's Web API could put the track name in live mode. It can't give the beat or the audio.
+- Live mode on Linux through PulseAudio monitor sources, which OpenAL Soft lists as capture devices.
 - Leaves that sway on the beat. This needs a terrain shader, and Sodium needs its own.
 - A clip mode for vertical video and an end-of-song card.
 - A license for the repo.
