@@ -398,15 +398,13 @@ public final class MineAtDisco implements ClientModInitializer {
 
 	/**
 	 * Checks whether {@code blocker} raised their shield right before the attack (within {@link #PARRY_TICKS} ticks).
-	 * On a perfect parry, knocks the attacker back hard, stuns it and skips axe shield-disable.
+	 * On a perfect parry, knocks the attacker back hard and skips axe shield-disable.
 	 */
 	public static boolean tryParry(LivingEntity blocker, LivingEntity attacker, DamageSource source, float amount) {
 		if (audioBeatNow < 0 || blocker.getTicksUsingItem() > PARRY_TICKS) {
 			return false;
 		}
 		attacker.knockback(1.4, blocker.getX() - attacker.getX(), blocker.getZ() - attacker.getZ(), source, amount);
-		attacker.hurtDuration = 10;
-		attacker.hurtTime = 10;
 		int id = attacker.getId();
 		Minecraft.getInstance().execute(() -> parryBurst(id));
 		return true;
