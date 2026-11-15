@@ -40,6 +40,7 @@ Tuning the owner asked for, in order:
 22. Eating and throwing follow the song. While the player eats or drinks, vanilla's 4-tick chewing timer is off and the mod bites on every eighth note, harder on the beat. Throws, shots and launches play on eighth notes, a throw let go near the beat answers on the HUD, and snowball, egg and splash potion bursts land on the next eighth note with sparks.
 23. Mining with a fast pickaxe felt broken, though the log showed every block breaking on the beat. Holding the first block until the next beat made a 0.1 s block take up to 0.35 s, so the player moved on and the break was aborted. The first block of a run now breaks on vanilla time unless a beat is a quarter beat away, and only chained blocks lock to the grid. The server's durability update after each block no longer restarts the next one.
 24. Music following borrows from osu! (ppy/osu, ppy/osu-framework): the interpolating audio clock with drift recovery, measured device latency instead of a fixed platform offset, and drawing one frame ahead.
+25. Calibration works like lazer's. Tapping skips two warm-up taps and takes the median of the last 16, so a stray tap moves nothing. Hits and used blocks within a quarter beat of a beat are logged, and after 16 of them the menu suggests the offset that centers them, with an Apply button, like lazer's suggested offset from hit errors.
 
 ## Code map
 
