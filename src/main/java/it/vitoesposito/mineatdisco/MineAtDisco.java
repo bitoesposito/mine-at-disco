@@ -37,6 +37,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.Options;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
@@ -321,11 +322,24 @@ public final class MineAtDisco implements ClientModInitializer {
 	}
 
 	/**
+	 * Minecraft's Distortion Effects slider, from 0 to 1. Players who turn it down for motion sickness get a calmer
+	 * ramp, HUD bounce and dance; at the default of 1 nothing changes.
+	 */
+	public static float motionScale() {
+		return Minecraft.getInstance().options.screenEffectScale().get().floatValue();
+	}
+
+	/** How big the mob and player dance is: the song's loudness times the Distortion Effects slider. */
+	public static float danceDrive() {
+		return drive() * motionScale();
+	}
+
+	/**
 	 * HUD bounce in GUI pixels: the song's bass punch {@code delay} seconds back on the ramped visual time. It follows
 	 * the kicks the song really plays, fills and breaks included, instead of a fixed accent per beat.
 	 */
 	private static float hop(double delay) {
-		return beatNow < 0 ? 0 : HUD_HOP * punchAt(rampedSeconds - delay);
+		return beatNow < 0 ? 0 : HUD_HOP * motionScale() * punchAt(rampedSeconds - delay);
 	}
 
 	/**
@@ -346,14 +360,17 @@ public final class MineAtDisco implements ClientModInitializer {
 		return Mth.hsvToRgb((float) Math.floorMod(beat, BeatTracker.PHRASE) / BeatTracker.PHRASE, 0.7f, 1);
 	}
 
-	/** Answers an action that landed on the beat with colored sparks around the crosshair. */
+	/**
+	 * Answers an action that landed on the beat with colored sparks around the crosshair. The hue walks from green to
+	 * magenta only, so it never reads as the red of a ready hit or the gold of the one.
+	 */
 	private static void flashHud(float strength) {
 		if (beatNow < 0) {
 			return;
 		}
 		flashBeat = beatNow;
 		flashStrength = Math.min(1, strength);
-		flashColor = discoColor(Math.round(beatRaw));
+		flashColor = Mth.hsvToRgb(0.3f + 0.55f * Math.floorMod(Math.round(beatRaw), BeatTracker.PHRASE) / BeatTracker.PHRASE, 0.7f, 1);
 	}
 
 	/** How strong the beat nearest to now is, 0 when the steady visual beat is more than {@code window} beats away. */
@@ -786,7 +803,7 @@ public final class MineAtDisco implements ClientModInitializer {
 			return;
 		}
 		double u = beatRaw % 1;
-		float depth = 0.4f + 0.45f * energyNow;
+		float depth = (0.4f + 0.45f * energyNow) * motionScale();
 		beatNow = beatRaw + depth * (Math.cos(2 * Math.PI * u) - 1) / (2 * Math.PI);
 		particleSpeed = 1 - depth * (float) Math.sin(2 * Math.PI * u);
 		lagTicks = (float) (20 * (BeatTracker.timeAt(beats, beatRaw) - BeatTracker.timeAt(beats, beatNow)));
@@ -1020,6 +1037,10 @@ public final class MineAtDisco implements ClientModInitializer {
 			double angle = 2 * Math.PI * i / ring;
 			spawn(new DustParticleOptions(Mth.hsvToRgb((float) i / ring, 0.7f, 1), 1.5f), feet.x, feet.y + 0.2, feet.z,
 					Math.cos(angle) * 0.4, 0.02, Math.sin(angle) * 0.4);
+		}
+		if (client.options.hideLightningFlash().get()) {
+			// Players who hide lightning flashes get the ring and the leaves without the bursts of light.
+			return;
 		}
 		// Three blocks out, so the rockets frame the view instead of flying through the camera.
 		RandomSource random = client.level.getRandom();
@@ -1495,49 +1516,59 @@ public final class MineAtDisco implements ClientModInitializer {
 	}
 
 	/**
-	 * The beat cue around the crosshair. Four brackets fly in and land on the beat, gold when the next beat opens the
-	 * bar. A ring opens where they land, the pips below count the bar, and an action on the beat answers with sparks in
-	 * the phrase's disco color. It all follows the velocity ramp and fades in quiet parts.
+	 * The beat cue around the crosshair. Four brackets fly in and land on the beat, framing the crosshair just clear of
+	 * the attack indicator, gold when the next beat opens the bar and red with longer arms when a full hit will be
+	 * ready. A ring opens where they land, the pips below count the bar, and an action on the beat answers with sparks.
+	 * Everything has a dark edge so it reads over snow and sky. It follows the velocity ramp and fades in quiet parts.
 	 */
 	private static void drawBeat(GuiGraphicsExtractor gui, DeltaTracker delta) {
 		if (beatNow < 0) {
 			return;
 		}
+		Options options = Minecraft.getInstance().options;
 		float cx = gui.guiWidth() / 2f;
 		float cy = gui.guiHeight() / 2f;
 		float phase = (float) (beatNow % 1);
 		int bar = (int) beatNow % 4;
 		float presence = Math.min(1, 0.4f + 0.6f * drive());
+		float edge = options.highContrast().get() ? 0.9f : 0.5f;
 		float flash = (float) (beatNow - flashBeat) / FLASH_BEATS;
-		boolean flashing = flash >= 0 && flash < 1;
+		boolean flashing = flash >= 0 && flash < 1 && !options.hideLightningFlash().get();
 
 		// Squaring the phase makes the brackets start slow and rush into the beat.
-		float radius = 5 + 14 * (1 - phase * phase);
-		int bracketColor = argb(presence * (0.25f + 0.75f * phase),
-				flashing ? flashColor : readyOnNextBeat() ? READY : bar == 3 ? GOLD : WHITE);
+		float radius = 8 + 13 * (1 - phase * phase);
+		boolean ready = readyOnNextBeat();
+		float alpha = presence * (0.25f + 0.75f * phase);
+		int color = ready ? READY : bar == 3 ? GOLD : WHITE;
 		for (int corner = 0; corner < 4; corner++) {
 			int sx = corner % 2 == 0 ? -1 : 1;
 			int sy = corner < 2 ? -1 : 1;
-			bracket(gui, cx + sx * radius, cy + sy * radius, sx, sy, bracketColor);
+			int arm = ready ? 6 : 4;
+			bracket(gui, cx + sx * radius + 1, cy + sy * radius + 1, sx, sy, arm, argb(alpha * edge, 0));
+			bracket(gui, cx + sx * radius, cy + sy * radius, sx, sy, arm, argb(alpha, color));
 		}
 
 		if (phase < RING) {
 			float k = phase / RING;
-			int size = Math.round(5 + 10 * k * (bar == 0 ? 1.5f : 1));
-			gui.pose().pushMatrix();
-			gui.pose().translate(cx, cy);
+			int size = Math.round(8 + 10 * k * (bar == 0 ? 1.5f : 1));
 			// The ring answers the kick that lands with the beat: bright on a hard hit, faint where the drums rest.
 			float hit = 0.35f + 0.65f * punchAt(rampedSeconds);
-			gui.outline(-size, -size, 2 * size, 2 * size, argb((1 - k) * presence * hit * (bar == 0 ? 1 : 0.5f), bar == 0 ? GOLD : WHITE));
+			float ringAlpha = (1 - k) * presence * hit * (bar == 0 ? 1 : 0.5f);
+			gui.pose().pushMatrix();
+			gui.pose().translate(cx, cy);
+			gui.outline(1 - size, 1 - size, 2 * size, 2 * size, argb(ringAlpha * edge, 0));
+			gui.outline(-size, -size, 2 * size, 2 * size, argb(ringAlpha, bar == 0 ? GOLD : WHITE));
 			gui.pose().popMatrix();
 		}
 
 		for (int pip = 0; pip < 4; pip++) {
-			float pop = pip == bar ? 1 + 1.5f * (1 - phase) * (1 - phase) : 0.6f;
+			float pop = pip == bar ? 1 + 0.75f * (1 - phase) * (1 - phase) : 1;
+			float pipAlpha = presence * (pip == bar ? 1 : 0.55f);
 			gui.pose().pushMatrix();
-			gui.pose().translate(cx + (pip * 2 - 3) * 6, cy + 24);
+			gui.pose().translate(cx + (pip * 2 - 3) * 6, cy + 26);
 			gui.pose().scale(pop);
-			gui.fill(-1, -1, 1, 1, argb(presence * (pip == bar ? 1 : 0.4f), pip == 0 ? GOLD : WHITE));
+			gui.fill(0, 0, 2, 2, argb(pipAlpha * edge, 0));
+			gui.fill(-1, -1, 1, 1, argb(pipAlpha, pip == 0 ? GOLD : WHITE));
 			gui.pose().popMatrix();
 		}
 
@@ -1545,8 +1576,11 @@ public final class MineAtDisco implements ClientModInitializer {
 			gui.pose().pushMatrix();
 			gui.pose().translate(cx, cy);
 			gui.pose().rotate((float) (Math.PI / 4 + spark * Math.PI / 2));
-			gui.pose().translate(9 + 12 * flash, 0);
-			gui.fill(0, 0, Math.round(3 + 3 * flashStrength), 1, argb((1 - flash) * (1 - flash) * flashStrength, flashColor));
+			gui.pose().translate(12 + 12 * flash, 0);
+			int length = Math.round(3 + 3 * flashStrength);
+			float sparkAlpha = (1 - flash) * (1 - flash) * flashStrength;
+			gui.fill(0, 1, length, 2, argb(sparkAlpha * edge, 0));
+			gui.fill(0, 0, length, 1, argb(sparkAlpha, flashColor));
 			gui.pose().popMatrix();
 		}
 	}
@@ -1571,9 +1605,8 @@ public final class MineAtDisco implements ClientModInitializer {
 		return player.getAttackStrengthScale(0) * delay + ticksToBeat >= delay;
 	}
 
-	/** An L-shaped bracket with its corner at (x, y) and its arms pointing back toward the crosshair. */
-	private static void bracket(GuiGraphicsExtractor gui, float x, float y, int sx, int sy, int color) {
-		int arm = 4;
+	/** An L-shaped bracket with its corner at (x, y) and arms {@code arm} pixels long pointing back toward the crosshair. */
+	private static void bracket(GuiGraphicsExtractor gui, float x, float y, int sx, int sy, int arm, int color) {
 		gui.pose().pushMatrix();
 		gui.pose().translate(x, y);
 		gui.fill(sx < 0 ? 0 : -arm, sy < 0 ? 0 : -1, sx < 0 ? arm : 0, sy < 0 ? 1 : 0, color);

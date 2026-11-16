@@ -52,7 +52,7 @@ public abstract class LivingEntityRendererMixin {
 		}
 		double beat = MineAtDisco.beat();
 		if (beat >= 0) {
-			state.xRot += NOD_DEGREES * MineAtDisco.drive() * (0.5f + 0.5f * bounce(beat));
+			state.xRot += NOD_DEGREES * MineAtDisco.danceDrive() * (0.5f + 0.5f * bounce(beat));
 		}
 	}
 
@@ -67,7 +67,7 @@ public abstract class LivingEntityRendererMixin {
 			return;
 		}
 		float bounce = bounce(beat);
-		float drive = MineAtDisco.drive();
+		float drive = MineAtDisco.danceDrive();
 		float height = (float) Math.pow(STRETCH, -bounce * drive);
 		// Width shrinks as height grows, so the mob keeps its volume like a squeezed plushie.
 		float width = 1 / (float) Math.sqrt(height);
@@ -87,7 +87,7 @@ public abstract class LivingEntityRendererMixin {
 			CameraRenderState camera, CallbackInfo info) {
 		double beat = MineAtDisco.beat();
 		if (beat >= 0) {
-			float drive = MineAtDisco.drive();
+			float drive = MineAtDisco.danceDrive();
 			pose.rotateDegrees(Axis.YP, TWIST_DEGREES * drive * (float) Math.sin(Math.PI * beat / 2));
 			pose.rotateDegrees(Axis.ZP, LEAN_DEGREES * drive * (float) Math.cos(Math.PI * beat / 2));
 		}
