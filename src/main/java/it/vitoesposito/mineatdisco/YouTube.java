@@ -43,12 +43,39 @@ final class YouTube {
 	private YouTube() {
 	}
 
-	/** Searches YouTube with the yt-dlp found in {@code dirs}. */
+	/** A link that isn't YouTube's. */
+	static final class NotYouTube extends IllegalArgumentException {
+		NotYouTube() {
+			super("only YouTube links");
+		}
+	}
+
+	/**
+	 * What yt-dlp should open for the text in the search box: a YouTube link as it is, words as a search. A playlist
+	 * link lists its songs. Throws {@link NotYouTube} for a link to any other site.
+	 */
+	static String target(String text) {
+		String query = text.strip();
+		if (query.matches("(?i)(https?://)?([a-z0-9-]+\\.)*(youtube\\.com|youtu\\.be)(/\\S*)?")) {
+			return query.matches("(?i)https?://.*") ? query : "https://" + query;
+		}
+		if (query.matches("(?i)https?://.*")) {
+			throw new NotYouTube();
+		}
+		return "ytsearch" + RESULTS + ":" + query;
+	}
+
+	/** Searches YouTube, or lists the video or playlist a link points to, with the yt-dlp found in {@code dirs}. */
 	static List<Result> search(String query, List<Path> dirs) throws IOException, InterruptedException {
+		String target = target(query);
 		Path ytDlp = require("yt-dlp", dirs);
 		List<Result> results = new ArrayList<>();
-		run(List.of(ytDlp.toString(), "--encoding", "utf-8", "--no-warnings", "--flat-playlist",
-				"--print", "%(id)s|%(duration)s|%(title)s", "ytsearch" + RESULTS + ":" + query), dirs, line -> {
+		List<String> command = new ArrayList<>(List.of(ytDlp.toString(), "--encoding", "utf-8", "--no-warnings", "--flat-playlist",
+				"--print", "%(id)s|%(duration)s|%(title)s"));
+		// A watch link inside a playlist means the one video; a playlist link means its first 50 songs.
+		command.addAll(target.contains("/playlist") ? List.of("--playlist-end", "50") : List.of("--no-playlist"));
+		command.add(target);
+		run(command, dirs, line -> {
 			Result result = parse(line);
 			if (result != null) {
 				results.add(result);
@@ -188,6 +215,17 @@ final class YouTube {
 		check(fileName("100% Pure \"Love\"...").equals("100 Pure Love"), fileName("100% Pure \"Love\"..."));
 		check(fileName("con").equals("con song") && fileName("...").equals("song"), "reserved and empty names");
 		check(fileName("x".repeat(200)).length() == 80, "long name");
+		check(target("daft punk").equals("ytsearch8:daft punk"), "words search");
+		check(target(" https://www.youtube.com/watch?v=dQw4w9WgXcQ ").equals("https://www.youtube.com/watch?v=dQw4w9WgXcQ"), "watch link");
+		check(target("youtu.be/dQw4w9WgXcQ").equals("https://youtu.be/dQw4w9WgXcQ"), "short link without scheme");
+		check(target("https://music.youtube.com/playlist?list=PL123").contains("/playlist"), "playlist link");
+		boolean refused = false;
+		try {
+			target("https://soundcloud.com/someone/song");
+		} catch (NotYouTube e) {
+			refused = true;
+		}
+		check(refused, "a link to another site is refused");
 		System.out.println("ok: results, progress and file names");
 	}
 
