@@ -10,6 +10,8 @@
 		"EntityRendererMixin",
 		"FallingLeavesInvoker",
 		"ItemStackMixin",
+		"JukeboxBlockEntityMixin",
+		"JukeboxSongPlayerMixin",
 		"LevelEventHandlerMixin",
 		"LivingEntityMixin",
 		"LivingEntityRendererMixin",

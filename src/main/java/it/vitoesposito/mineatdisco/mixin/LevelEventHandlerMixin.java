@@ -8,12 +8,22 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-/** Moves splash and lingering potion bursts (level events 2002 and 2007) onto the song's grid. */
+/**
+ * Moves splash and lingering potion bursts (level events 2002 and 2007) onto the song's grid, and plays a burned disc's
+ * song when a jukebox starts it (1010) or stops (1011).
+ */
 @Mixin(LevelEventHandler.class)
 public abstract class LevelEventHandlerMixin {
 	@Inject(method = "levelEvent(ILnet/minecraft/core/BlockPos;I)V", at = @At("HEAD"), cancellable = true)
 	private void mineatdisco$splashOnBeat(int type, BlockPos pos, int data, CallbackInfo info) {
 		LevelEventHandler self = (LevelEventHandler) (Object) this;
+		if (type == 1010 && MineAtDisco.jukeboxStarted(pos)) {
+			info.cancel();
+			return;
+		}
+		if (type == 1011) {
+			MineAtDisco.jukeboxStopped(pos);
+		}
 		if ((type == 2002 || type == 2007)
 				&& MineAtDisco.holdImpact(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5, () -> self.levelEvent(type, pos, data))) {
 			info.cancel();
