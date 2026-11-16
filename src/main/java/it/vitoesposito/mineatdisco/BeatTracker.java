@@ -283,6 +283,90 @@ public final class BeatTracker {
 	}
 
 	/** Returns the beat index plus the phase within that beat, or -1 outside the tracked beats. */
+	/** Notes the pitch reading listens to, C2 to B6 as MIDI numbers. */
+	private static final int LOW_NOTE = 36;
+	private static final int HIGH_NOTE = 95;
+	/** Samples per pitch reading at about 11 kHz: 0.37 s, long enough to tell semitones apart down to C2. */
+	static final int PITCH_WINDOW = 4096;
+
+	/**
+	 * The strongest pitch class in each beat (0 is C, 9 is A), -1 where nothing stands out. Half of the previous beat
+	 * counts too, so a passing note doesn't flip it. The parry chime plays in this key.
+	 */
+	public static byte[] roots(ShortBuffer pcm, int channels, int sampleRate, double[] beats) {
+		int step = pitchStep(sampleRate);
+		float[] mono = decimate(pcm, channels, step);
+		byte[] roots = new byte[beats.length];
+		float[] previous = new float[12];
+		for (int i = 0; i < beats.length; i++) {
+			float[] chroma = chroma(mono, sampleRate / step, (int) (beats[i] * sampleRate / step));
+			float[] both = new float[12];
+			for (int c = 0; c < 12; c++) {
+				both[c] = chroma[c] + previous[c] / 2;
+			}
+			roots[i] = strongest(both);
+			previous = chroma;
+		}
+		return roots;
+	}
+
+	/** Keeps every step-th sample, averaged over the step and the channels: about 11 kHz mono for pitch reading. */
+	static int pitchStep(int sampleRate) {
+		return Math.max(1, sampleRate / 11025);
+	}
+
+	static float[] decimate(ShortBuffer pcm, int channels, int step) {
+		float[] mono = new float[pcm.remaining() / channels / step];
+		for (int i = 0; i < mono.length; i++) {
+			float sum = 0;
+			for (int s = 0; s < step * channels; s++) {
+				sum += pcm.get(pcm.position() + i * step * channels + s);
+			}
+			mono[i] = sum / (step * channels);
+		}
+		return mono;
+	}
+
+	/** Energy per pitch class in {@link #PITCH_WINDOW} samples from {@code start}, one Goertzel filter per semitone. */
+	static float[] chroma(float[] mono, int rate, int start) {
+		float[] chroma = new float[12];
+		int from = Math.max(0, start);
+		int length = Math.min(PITCH_WINDOW, mono.length - from);
+		if (length < PITCH_WINDOW / 2) {
+			return chroma;
+		}
+		// A Hann window keeps each filter from hearing its neighbours.
+		float[] windowed = new float[length];
+		for (int n = 0; n < length; n++) {
+			windowed[n] = (float) (mono[from + n] * (0.5 - 0.5 * Math.cos(2 * Math.PI * n / length)));
+		}
+		for (int note = LOW_NOTE; note <= HIGH_NOTE; note++) {
+			double coefficient = 2 * Math.cos(2 * Math.PI * 440 * Math.pow(2, (note - 69) / 12.0) / rate);
+			double s1 = 0;
+			double s2 = 0;
+			for (float sample : windowed) {
+				double s0 = sample + coefficient * s1 - s2;
+				s2 = s1;
+				s1 = s0;
+			}
+			chroma[note % 12] += (float) Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - coefficient * s1 * s2));
+		}
+		return chroma;
+	}
+
+	/** The strongest pitch class, or -1 when none rises clearly above the average. */
+	static byte strongest(float[] chroma) {
+		int best = 0;
+		float total = 0;
+		for (int c = 0; c < 12; c++) {
+			total += chroma[c];
+			if (chroma[c] > chroma[best]) {
+				best = c;
+			}
+		}
+		return total <= 0 || chroma[best] < 1.5f * total / 12 ? -1 : (byte) best;
+	}
+
 	public static double beatAt(double[] beats, double seconds) {
 		int i = Arrays.binarySearch(beats, seconds);
 		if (i < 0) {
@@ -461,7 +545,25 @@ public final class BeatTracker {
 			}
 			check(last % 4 == 0, "a chain of bar-long actions from beat " + start + " ends on " + last);
 		}
-		System.out.println("ok: " + beats.length + " beats at " + bpm(beats) + " BPM");
+		// A tone per beat walking up in fourths, with a quieter fifth on top: each beat's root is its own tone.
+		short[] tones = new short[rate * 12];
+		double[] toneBeats = new double[20];
+		for (int k = 0; k < toneBeats.length; k++) {
+			toneBeats[k] = 0.5 * k;
+			int note = 57 + k * 5 % 12;
+			for (int i = (int) (toneBeats[k] * rate); i < (int) ((toneBeats[k] + 0.5) * rate); i++) {
+				double t = (double) i / rate;
+				tones[i] = (short) (8000 * Math.sin(2 * Math.PI * 440 * Math.pow(2, (note - 69) / 12.0) * t)
+						+ 3000 * Math.sin(2 * Math.PI * 440 * Math.pow(2, (note + 7 - 69) / 12.0) * t));
+			}
+		}
+		byte[] roots = roots(ShortBuffer.wrap(tones), 1, rate, toneBeats);
+		for (int k = 0; k < toneBeats.length; k++) {
+			check(roots[k] == (57 + k * 5 % 12) % 12, "beat " + k + " reads pitch class " + roots[k]);
+		}
+		check(strongest(new float[12]) == -1, "silence has no root");
+
+		System.out.println("ok: " + beats.length + " beats at " + bpm(beats) + " BPM, roots of " + roots.length + " tones");
 	}
 
 	private static void check(boolean condition, String message) {

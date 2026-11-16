@@ -27,13 +27,17 @@ final class LiveBeat {
 	/** Beats of loudness history the energy is measured against. */
 	private static final int HISTORY = 300;
 
-	/** The timeline at one moment: beat times in seconds, how loud each beat is from 0 to 1, and the drops. */
-	record Snapshot(double[] beats, float[] energy, boolean[] drops) {
-		static final Snapshot EMPTY = new Snapshot(new double[0], new float[0], new boolean[0]);
+	/**
+	 * The timeline at one moment: beat times in seconds, how loud each beat is from 0 to 1, the drops, and each beat's
+	 * strongest pitch class (see BeatTracker.roots).
+	 */
+	record Snapshot(double[] beats, float[] energy, boolean[] drops, byte[] roots) {
+		static final Snapshot EMPTY = new Snapshot(new double[0], new float[0], new boolean[0], new byte[0]);
 	}
 
 	private final List<Double> beats = new ArrayList<>();
 	private final List<Float> loudness = new ArrayList<>();
+	private final List<Byte> roots = new ArrayList<>();
 	private int proposedShift;
 	private int votes;
 
@@ -45,6 +49,7 @@ final class LiveBeat {
 		while (!beats.isEmpty() && beats.getLast() > now - FREEZE) {
 			beats.removeLast();
 			loudness.removeLast();
+			roots.removeLast();
 		}
 		double[] found = BeatTracker.track(ShortBuffer.wrap(window), 1, rate);
 		if (found.length < 2 * BeatTracker.PHRASE) {
@@ -53,6 +58,8 @@ final class LiveBeat {
 		}
 		double period = (found[found.length - 1] - found[found.length - 1 - BeatTracker.PHRASE]) / BeatTracker.PHRASE;
 		double last = beats.isEmpty() ? Double.NEGATIVE_INFINITY : beats.getLast();
+		int step = BeatTracker.pitchStep(rate);
+		float[] mono = BeatTracker.decimate(ShortBuffer.wrap(window), 1, step);
 		boolean first = true;
 		for (int k = 0; k < found.length; k++) {
 			double time = found[k] + windowStart;
@@ -73,11 +80,13 @@ final class LiveBeat {
 			}
 			beats.add(time);
 			loudness.add(rms(window, rate, (time - windowStart), Math.min(time + period, now) - windowStart));
+			roots.add(BeatTracker.strongest(BeatTracker.chroma(mono, rate / step, (int) ((time - windowStart) * rate / step))));
 		}
 		double newest = beats.isEmpty() ? now : beats.getLast();
 		for (int i = 1; i <= AHEAD && !beats.isEmpty(); i++) {
 			beats.add(newest + i * period);
 			loudness.add(loudness.getLast());
+			roots.add(roots.getLast());
 		}
 		return snapshot();
 	}
@@ -94,6 +103,7 @@ final class LiveBeat {
 			for (int i = 0; i < shift && !beats.isEmpty(); i++) {
 				beats.removeFirst();
 				loudness.removeFirst();
+				roots.removeFirst();
 			}
 			votes = 0;
 		}
@@ -103,8 +113,10 @@ final class LiveBeat {
 		int n = beats.size();
 		double[] times = new double[n];
 		float[] energy = new float[n];
+		byte[] pitches = new byte[n];
 		for (int i = 0; i < n; i++) {
 			times[i] = beats.get(i);
+			pitches[i] = roots.get(i);
 		}
 		// Like BeatTracker.energy, against the quietest tenth and the loudest twentieth, but of recent history only.
 		float[] recent = new float[Math.min(n, HISTORY)];
@@ -117,7 +129,7 @@ final class LiveBeat {
 		for (int i = 0; i < n; i++) {
 			energy[i] = loud > quiet ? Math.clamp((loudness.get(i) - quiet) / (loud - quiet), 0, 1) : 1;
 		}
-		return new Snapshot(times, energy, BeatTracker.drops(energy));
+		return new Snapshot(times, energy, BeatTracker.drops(energy), pitches);
 	}
 
 	private static float rms(short[] window, int rate, double from, double to) {
