@@ -130,5 +130,6 @@
 	"mineatdisco.youtube.downloading_more": "%s, %s more waiting",
 	"mineatdisco.youtube.all": "Download All %s",
 	"mineatdisco.youtube.state.added": "Added",
-	"mineatdisco.youtube.state.queued": "Queued"
+	"mineatdisco.youtube.state.queued": "Queued",
+	"mineatdisco.player.seek": "Song position"
 }

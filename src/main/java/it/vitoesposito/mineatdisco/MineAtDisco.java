@@ -50,6 +50,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.Options;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.Tooltip;
@@ -57,6 +58,7 @@ import net.minecraft.client.gui.screens.ConfirmScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.client.gui.narration.NarrationElementOutput;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.particle.Particle;
 import net.minecraft.client.player.LocalPlayer;
@@ -308,6 +310,12 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static final Map<String, String> discoJukeboxes = new ConcurrentHashMap<>();
 	/** How long each of those songs lasts in ticks, once the client has decoded it, so the server stops on time. */
 	private static final Map<String, Long> discoLengths = new ConcurrentHashMap<>();
+	/**
+	 * Where the last seek went, until OpenAL reports a position near it. The mixer applies an offset a moment later, and
+	 * a stale reading would lock the clock, which never runs backwards, at the old position.
+	 */
+	private static double seekedTo = Double.NaN;
+	private static long seekedNanos;
 	/** The latest short message while the menu is open: the menu covers the line where the game shows them. */
 	private static Component menuMessage;
 	private static long menuMessageAt;
@@ -1659,16 +1667,29 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 	}
 
-	/** Jumps to {@code seconds} into the song from the menu. */
+	/**
+	 * Jumps to {@code seconds} into the song from the menu. Pausing first makes OpenAL take the new offset in samples
+	 * whatever the source was doing; playback resumes from there unless the song is paused.
+	 */
 	private static void seek(double seconds) {
-		if (source == 0 || jukebox != null) {
+		if (!localSong()) {
 			return;
 		}
 		double to = Mth.clamp(seconds, 0, Math.max(0, songLength - 0.1));
-		AL10.alSourcef(source, AL11.AL_SEC_OFFSET, (float) to);
+		AL10.alGetError();
+		AL10.alSourcePause(source);
+		AL10.alSourcei(source, AL11.AL_SAMPLE_OFFSET, (int) (to * sampleRate));
+		int error = AL10.alGetError();
+		if (!paused) {
+			AL10.alSourcePlay(source);
+		}
+		LOGGER.info("Mine at Disco: seek to {} s{}", String.format(java.util.Locale.ROOT, "%.1f", to),
+				error == AL10.AL_NO_ERROR ? "" : ", OpenAL error " + error);
 		clock.reset();
+		seekedTo = to;
+		seekedNanos = System.nanoTime();
 		playedAt = to;
-		playedNanos = System.nanoTime();
+		playedNanos = seekedNanos;
 		flushDeferred();
 		resetTiming();
 	}
@@ -1837,7 +1858,6 @@ public final class MineAtDisco implements ClientModInitializer {
 			if (ended && client.level != null && jukebox == null) {
 				if (repeat == REPEAT_ONE) {
 					seek(0);
-					AL10.alSourcePlay(source);
 					return;
 				}
 				if (!queue.isEmpty() || repeat == REPEAT_ALL && playlist != null) {
@@ -1891,6 +1911,16 @@ public final class MineAtDisco implements ClientModInitializer {
 			latency = offsetAndLatency[1];
 		} else {
 			reading = AL10.alGetSourcei(source, AL11.AL_SAMPLE_OFFSET) / (double) sampleRate;
+		}
+		if (!Double.isNaN(seekedTo)) {
+			double expected = seekedTo + (paused ? 0 : (nanos - seekedNanos) / 1e9);
+			if (Math.abs(reading - expected) > 0.1 && nanos - seekedNanos < 500_000_000L) {
+				playedAt = expected;
+				playedNanos = nanos;
+				return;
+			}
+			seekedTo = Double.NaN;
+			clock.reset();
 		}
 		playedAt = paused ? reading : clock.update(reading, frameSeconds);
 		playedNanos = nanos;
@@ -2310,6 +2340,8 @@ public final class MineAtDisco implements ClientModInitializer {
 		private final boolean iconOnly;
 		/** Set on the source that plays: its icon dances to the beat and music notes play beside it. */
 		private boolean dancing;
+		/** Scrolls the list this row belongs to by one row up (-1) or down (1). */
+		private java.util.function.IntConsumer scroll;
 
 		private IconButton(int x, int y, int width, Item icon, Component label, Component trailing, boolean iconOnly, OnPress onPress) {
 			super(x, y, width, 20, label, onPress, DEFAULT_NARRATION);
@@ -2329,6 +2361,15 @@ public final class MineAtDisco implements ClientModInitializer {
 		/** The music disc a song wears in the menus, the same one every time for the same name. */
 		private static Item disc(String name) {
 			return DISCS[Math.floorMod(name.hashCode(), DISCS.length)];
+		}
+
+		@Override
+		public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+			if (scroll == null || scrollY == 0) {
+				return false;
+			}
+			scroll.accept(scrollY > 0 ? -1 : 1);
+			return true;
 		}
 
 		private void show(Item item, Component label, Component trailing) {
@@ -2371,6 +2412,81 @@ public final class MineAtDisco implements ClientModInitializer {
 			}
 			gui.item(icon, x + 2, y + 2 - bob);
 			gui.text(font, label, x + 22, y + 6, color, true);
+		}
+	}
+
+	/**
+	 * The seek bar: a boss bar scaled to the column, pink for a song the player can move through and white for a
+	 * jukebox's. A click jumps at once; a drag shows the time and jumps again on release.
+	 */
+	private static final class SeekBar extends AbstractWidget {
+		/** Where a drag points, NaN when there is none. */
+		private double dragging = Double.NaN;
+		private double clicked = Double.NaN;
+
+		private SeekBar(int x, int y, int width) {
+			super(x, y, width, 9, Component.translatable("mineatdisco.player.seek"));
+		}
+
+		private double timeAt(double mouseX) {
+			return Mth.clamp((mouseX - getX()) / getWidth(), 0, 1) * songLength;
+		}
+
+		/** The time to show: a drag, the mouse over the bar, or NaN for the song's own position. */
+		private double preview(int mouseX) {
+			return !Double.isNaN(dragging) ? dragging : active && isHovered() ? timeAt(mouseX) : Double.NaN;
+		}
+
+		@Override
+		public void onClick(MouseButtonEvent event, boolean doubleClick) {
+			dragging = timeAt(event.x());
+			clicked = dragging;
+			seek(dragging);
+		}
+
+		@Override
+		protected void onDrag(MouseButtonEvent event, double dragX, double dragY) {
+			dragging = timeAt(event.x());
+		}
+
+		@Override
+		public void onRelease(MouseButtonEvent event) {
+			finish();
+		}
+
+		/** Ends a drag, wherever the mouse was let go. */
+		private void finish() {
+			if (!Double.isNaN(dragging) && Math.abs(dragging - clicked) > 0.2) {
+				seek(dragging);
+			}
+			dragging = Double.NaN;
+		}
+
+		@Override
+		protected void extractWidgetRenderState(GuiGraphicsExtractor gui, int mouseX, int mouseY, float partialTick) {
+			if (!Double.isNaN(dragging) && !Minecraft.getInstance().mouseHandler.isLeftPressed()) {
+				// Let go off the bar: the game only tells the widget under the mouse about a release.
+				finish();
+			}
+			double shown = preview(mouseX);
+			double at = Double.isNaN(shown) ? position() : shown;
+			// Boss bars are 182 pixels wide: scale one to the column and draw the played part over it.
+			gui.pose().pushMatrix();
+			gui.pose().translate(getX(), getY() + 2);
+			gui.pose().scale(getWidth() / 182f, 1);
+			gui.blitSprite(RenderPipelines.GUI_TEXTURED, jukebox != null ? JUKEBOX_BAR_BACKGROUND : BAR_BACKGROUND, 0, 0, 182, 5);
+			gui.blitSprite(RenderPipelines.GUI_TEXTURED, jukebox != null ? JUKEBOX_BAR_PROGRESS : BAR_PROGRESS, 182, 5, 0, 0, 0, 0,
+					(int) Math.round(182 * Mth.clamp(at / songLength, 0, 1)), 5);
+			gui.pose().popMatrix();
+			if (!Double.isNaN(shown)) {
+				int x = getX() + (int) Math.round(getWidth() * shown / songLength);
+				gui.fill(x, getY() + 1, x + 1, getY() + 8, 0xFFFFFFFF);
+			}
+		}
+
+		@Override
+		protected void updateWidgetNarration(NarrationElementOutput output) {
+			defaultButtonNarrationText(output);
 		}
 	}
 
@@ -2436,10 +2552,8 @@ public final class MineAtDisco implements ClientModInitializer {
 		/** What each library row shows: a song, a playlist, or null for system audio. */
 		private final List<String> rowEntries = new ArrayList<>();
 		private EditBox textBox;
-		/** Where the seek bar is dragged to, NaN when it isn't. */
-		private double seeking = Double.NaN;
-		/** The song time under the mouse on the seek bar, NaN when the mouse is elsewhere. */
-		private double hovered = Double.NaN;
+		private SeekBar seekBar;
+		private int lastMouseX;
 		private IconButton previousButton;
 		private IconButton playButton;
 		private IconButton nextButton;
@@ -2525,6 +2639,7 @@ public final class MineAtDisco implements ClientModInitializer {
 				int y = listTop + i * ROW;
 				rows.add(addRenderableWidget(new IconButton(left, y, column - side, Items.MUSIC_DISC_CAT, Component.empty(), null, false,
 						b -> pressRow(index))));
+				rows.getLast().scroll = this::scrollLibrary;
 				if (songsTab) {
 					addButtons.add(addRenderableWidget(IconButton.glyph(left + column - 42, y, PLUS, Component.translatable("mineatdisco.queue.add"),
 							Component.translatable("mineatdisco.queue.add"), b -> enqueue(rowEntries.get(index), minecraft))));
@@ -2539,6 +2654,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 
 		private void initPlayer() {
+			seekBar = addRenderableWidget(new SeekBar(right, TOP + 19, column));
 			int y = TOP + 30;
 			previousButton = addRenderableWidget(IconButton.glyph(right, y, PREVIOUS, Component.translatable("mineatdisco.player.previous"),
 					Component.translatable("mineatdisco.player.previous.tooltip"), b -> previous(minecraft)));
@@ -2581,6 +2697,10 @@ public final class MineAtDisco implements ClientModInitializer {
 					int index = i;
 					queueRows.add(addRenderableWidget(new IconButton(right, queueTop + i * ROW, column - 22, Items.MUSIC_DISC_CAT, Component.empty(),
 							null, false, b -> playFromQueue(queueScroll + index))));
+					queueRows.getLast().scroll = step -> {
+						queueScroll += step;
+						refresh();
+					};
 					removeButtons.add(addRenderableWidget(IconButton.glyph(right + column - 20, queueTop + i * ROW, CROSS,
 							Component.translatable("mineatdisco.queue.remove"), Component.translatable("mineatdisco.queue.remove"), b -> {
 								if (queueScroll + index < queue.size()) {
@@ -2617,6 +2737,15 @@ public final class MineAtDisco implements ClientModInitializer {
 					}
 				}).bounds(right, row, column, 20).tooltip(Tooltip.create(Component.translatable("mineatdisco.menu.apply.tooltip"))).build());
 			}
+		}
+
+		/**
+		 * Moves the library list by one row. Minecraft 26.3 hands the mouse wheel to the widget under the cursor and not
+		 * to the screen, so the rows call this.
+		 */
+		private void scrollLibrary(int step) {
+			libraryScroll += step;
+			refresh();
 		}
 
 		private void switchLibrary(int tab) {
@@ -2767,56 +2896,6 @@ public final class MineAtDisco implements ClientModInitializer {
 			refresh();
 		}
 
-		@Override
-		public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
-			int step = scrollY > 0 ? -1 : scrollY < 0 ? 1 : 0;
-			if (mouseX < left + column + PAD && mouseY >= listTop) {
-				libraryScroll += step;
-			} else if (mouseX >= right - PAD && playerTab == QUEUE_TAB && mouseY >= queueTop) {
-				queueScroll += step;
-			} else {
-				return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
-			}
-			refresh();
-			return true;
-		}
-
-		private boolean onSeekBar(double x, double y) {
-			return localSong() && x >= right && x <= right + column && y >= TOP + 19 && y <= TOP + 28;
-		}
-
-		private double seekTarget(double x) {
-			return Mth.clamp((x - right) / column, 0, 1) * songLength;
-		}
-
-		@Override
-		public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
-			if (event.button() == 0 && onSeekBar(event.x(), event.y())) {
-				seeking = seekTarget(event.x());
-				return true;
-			}
-			return super.mouseClicked(event, doubleClick);
-		}
-
-		@Override
-		public boolean mouseDragged(MouseButtonEvent event, double dragX, double dragY) {
-			if (!Double.isNaN(seeking)) {
-				seeking = seekTarget(event.x());
-				return true;
-			}
-			return super.mouseDragged(event, dragX, dragY);
-		}
-
-		@Override
-		public boolean mouseReleased(MouseButtonEvent event) {
-			if (!Double.isNaN(seeking)) {
-				seek(seeking);
-				seeking = Double.NaN;
-				return true;
-			}
-			return super.mouseReleased(event);
-		}
-
 		/** The now-playing card: what plays, and a line with its tempo and time, a fresh message or a hint. */
 		private Component[] card() {
 			Component title;
@@ -2829,7 +2908,8 @@ public final class MineAtDisco implements ClientModInitializer {
 				line = recentBpm() > 0 ? Component.translatable("mineatdisco.card.bpm", recentBpm()) : Component.translatable("mineatdisco.card.listening");
 			} else if (source != 0) {
 				title = Component.literal(currentSong);
-				double at = !Double.isNaN(seeking) ? seeking : !Double.isNaN(hovered) ? hovered : position();
+				double shown = seekBar.preview(lastMouseX);
+				double at = Double.isNaN(shown) ? position() : shown;
 				String key = jukebox != null ? "mineatdisco.card.jukebox" : paused ? "mineatdisco.card.paused" : "mineatdisco.card.playing";
 				line = Component.translatable(key, Math.round(BeatTracker.bpm(beats)), clockTime(at), clockTime(songLength));
 			} else {
@@ -2854,6 +2934,8 @@ public final class MineAtDisco implements ClientModInitializer {
 		@Override
 		public void extractRenderState(GuiGraphicsExtractor gui, int mouseX, int mouseY, float partialTick) {
 			boolean local = localSong();
+			seekBar.visible = source != 0 && songLength > 0;
+			seekBar.active = local;
 			previousButton.active = local;
 			playButton.active = local || !playing() && loadingSong == null && !queue.isEmpty();
 			playButton.glyph = local && !paused ? PAUSE : PLAY;
@@ -2909,7 +2991,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 
 		private void drawCard(GuiGraphicsExtractor gui, int mouseX, int mouseY) {
-			hovered = onSeekBar(mouseX, mouseY) ? seekTarget(mouseX) : Double.NaN;
+			lastMouseX = mouseX;
 			Component[] card = card();
 			int bob = playing() ? Math.round(hop(0)) : 0;
 			if (jukebox != null) {
@@ -2927,21 +3009,6 @@ public final class MineAtDisco implements ClientModInitializer {
 			}
 			gui.text(font, title, right + 20, TOP + 1, 0xFFFFFFFF, true);
 			gui.text(font, font.substrByWidth(card[1], column - 20).getString(), right + 20, TOP + 11, GRAY, true);
-			if (source != 0 && songLength > 0) {
-				double at = Double.isNaN(seeking) ? position() : seeking;
-				// Boss bars are 182 pixels wide: scale one to the column, draw the played part, mark where the mouse points.
-				gui.pose().pushMatrix();
-				gui.pose().translate(right, TOP + 21);
-				gui.pose().scale(column / 182f, 1);
-				gui.blitSprite(RenderPipelines.GUI_TEXTURED, jukebox != null ? JUKEBOX_BAR_BACKGROUND : BAR_BACKGROUND, 0, 0, 182, 5);
-				gui.blitSprite(RenderPipelines.GUI_TEXTURED, jukebox != null ? JUKEBOX_BAR_PROGRESS : BAR_PROGRESS, 182, 5, 0, 0, 0, 0,
-						(int) Math.round(182 * Mth.clamp(at / songLength, 0, 1)), 5);
-				gui.pose().popMatrix();
-				if (localSong() && !Double.isNaN(hovered)) {
-					int x = right + (int) Math.round(column * hovered / songLength);
-					gui.fill(x, TOP + 20, x + 1, TOP + 27, 0xFFFFFFFF);
-				}
-			}
 		}
 
 		private void drawLibraryNotes(GuiGraphicsExtractor gui) {
