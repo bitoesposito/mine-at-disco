@@ -3,13 +3,17 @@
 	"id": "mineatdisco",
 	"version": "${version}",
 	"name": "Mine at Disco",
-	"description": "Plays your own music and syncs the game to its beat.",
+	"description": "Plays your music and moves the whole game to its beat: mining, combat, mobs, particles and the HUD.",
 	"authors": [
 		"Vito Esposito"
 	],
 	"contact": {
-		"sources": "https://github.com/bitoesposito/mine-at-disco"
+		"homepage": "https://github.com/bitoesposito/mine-at-disco",
+		"sources": "https://github.com/bitoesposito/mine-at-disco",
+		"issues": "https://github.com/bitoesposito/mine-at-disco/issues"
 	},
+	"license": "MIT",
+	"icon": "assets/mineatdisco/icon.png",
 	"environment": "client",
 	"entrypoints": {
 		"client": [
