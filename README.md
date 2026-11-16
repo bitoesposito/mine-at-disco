@@ -35,7 +35,7 @@ The songs folder is `disco` inside the game folder. The mod creates it on first 
 
 ### Music discs
 
-In a world you play yourself, hold any music disc and click the fire charge next to a song to burn the song onto it (in creative you get a new disc). Put the disc in a jukebox: the song plays from there and fades as you walk away, like a vanilla record, and the game around it moves to its beat.
+In a world you play yourself, craft a blank disc from four coal or charcoal around a copper ingot (the recipe unlocks with your first copper ingot). Hold it, or any music disc, and click the fire charge next to a song to burn the song onto it (in creative you get a new disc). Put the disc in a jukebox: the song plays from there and fades as you walk away, like a vanilla record, and the game around it moves to its beat.
 
 If Music or Master volume is at 0% when a world opens, the mod asks you to turn it up, since songs play on the Music volume.
 

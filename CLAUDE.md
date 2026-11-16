@@ -53,6 +53,8 @@ Tuning the owner asked for, in order:
 35. YouTube links work in the search box: a video, or a playlist's first 50 songs with a Download All button. Downloads wait in a queue and run one at a time; each saved song plays at once when nothing plays, or joins the queue.
 36. Burned discs. In a world this game runs, the fire charge on a song row burns it onto the music disc in the main hand (in creative, onto a new one): custom data names the song, the vanilla record's line is hidden. `JukeboxBlockEntityMixin` notes the disc on the integrated server before the jukebox starts, the client plays the song from the jukebox as mono with vanilla's linear fade to silence at 64 blocks on the Jukebox/Note Blocks volume, and every effect fades with the distance. `JukeboxSongPlayerMixin` stops the jukebox at the song's real length instead of the record's.
 37. The menu became library and player. The library on the left has Songs and Playlists tabs, a search and the actions above Minecraft's list separator, and a list that scrolls with the wheel, with add-to-queue and burn on each song. The player on the right shows what plays, the boss bar, pixel-art controls drawn like button text, and Queue, Volume (vanilla sliders for Master, Music, Jukebox/Note Blocks and Blocks) and Sync tabs. The panels reach over the line where the game shows short messages, so `tell()` shows them in the player while the menu is open.
+38. The seek bar ignored every click: in 26.3 mouse clicks, releases and the wheel reach the widget under the cursor, not the screen's own `mouseClicked` or `mouseScrolled`, so screen-level handlers never run. The seek bar is a widget (`SeekBar`), list rows scroll their list, and a seek pauses the source, sets the sample offset and resumes, ignoring OpenAL's stale readings for half a second.
+39. A blank disc to fill in survival: four coal or charcoal around a copper ingot, unlocked in the recipe book with the first copper ingot. It is a vanilla record without its jukebox part, with its own name, model and texture, from the mod's datapack, so no item joins the registry and servers without the mod still accept the client. Burning a song onto it gives it the record's jukebox part back and the look of the disc the song wears in the menu.
 
 ## Code map
 
@@ -63,6 +65,7 @@ Tuning the owner asked for, in order:
 - `mixin/SoundEngineMixin` holds world sounds until the next grid line and calls `frame()` once per frame.
 - `mixin/ClientLevelMixin` takes over the mining hit effect and the block break burst. `mixin/MultiPlayerGameModeMixin` paces block breaking and cracks to the beat and hooks player attacks. `mixin/ItemStackMixin` turns off vanilla chewing so the mod can bite on the beat. `mixin/ClientPacketListenerMixin` and `mixin/LevelEventHandlerMixin` hold thrown item and splash potion bursts for the grid.
 - `mixin/LivingEntityMixin` holds mob hurt visuals until the next eighth note and deaths until the next beat, removes the 5-tick shield delay while music plays, and handles perfect parries. `mixin/MeleeAttackGoalMixin` holds melee mob strikes until the beat after a pre-beat warning cue, and `mixin/CreeperMixin` holds creeper detonations until the beat.
+- `data/mineatdisco/recipe/blank_disc.json` and its unlock in `advancement/recipes/misc` make the blank disc; `assets/mineatdisco/items`, `models` and `textures` draw it.
 - `mixin/JukeboxBlockEntityMixin` and `mixin/JukeboxSongPlayerMixin` run on the integrated server for burned discs; `mixin/LevelEventHandlerMixin` starts and stops their songs on the client (level events 1010 and 1011).
 - `mixin/LivingEntityRendererMixin` is the mob and player dance and bends walk, hand-swing and death animations during a ramp. `mixin/EntityRendererMixin` bends entity animation during a ramp. `mixin/CameraMixin` is the FOV kick and `mixin/ParticleMixin` bends particle motion during a ramp. `mixin/FallingLeavesInvoker` sheds leaves.
 - User-facing text lives in `assets/mineatdisco/lang/en_us.json`. Never hardcode a string the player sees.
@@ -80,10 +83,11 @@ Tuning the owner asked for, in order:
 ## Working method
 
 - Read the game's API from the installed client jar with `javap` before writing a mixin. Since 26.x the jar is not obfuscated. Fabric API jars come from `maven.fabricmc.net`.
+- Copy the format of data files (recipes, advancements) from `data/minecraft` in the same jar. One bad advancement stops every world from loading: `recipe_unlocked` takes `recipes`, not `recipe`.
 - Build with JDK 25: `export JAVA_HOME=$HOME/.jdks/jdk-25.0.5+8 && ./gradlew build`.
 - Run the self-check after touching the tracker: `java src/main/java/it/vitoesposito/mineatdisco/BeatTracker.java`. To check a real song, pass raw PCM as its doc comment shows.
 - Test in the real game, not `runClient` under WSL. Prism Launcher lives in `C:\Games\Minecraft` with a separate instance `mine-at-disco`. Leave the owner's `26.3` instance alone.
-  - Copy `build/libs/mine-at-disco-0.1.0.jar` to `instances/mine-at-disco/minecraft/mods/`. The game must be closed to replace it.
+  - Copy the jar from `build/libs` to `instances/mine-at-disco/minecraft/mods/` and delete the older one there: two versions of the mod stop the game. The game must be closed to replace it.
   - Launch with `/mnt/c/Games/Minecraft/prismlauncher.exe --launch mine-at-disco`.
   - Watch `instances/mine-at-disco/minecraft/logs/latest.log` for mixin errors and `/disco` chat lines.
   - Don't drive the game with simulated keys or clicks: PowerShell scripts that do it trip the owner's antivirus. Launch it and let the owner open menus and click.
