@@ -92,7 +92,7 @@ Tuning the owner asked for, in order:
   - Watch `instances/mine-at-disco/minecraft/logs/latest.log` for mixin errors and `/disco` chat lines.
   - Don't drive the game with simulated keys or clicks: PowerShell scripts that do it trip the owner's antivirus. Launch it and let the owner open menus and click.
 - Only the owner can hear and see the result. After each change, say what to try and ask how it feels, then tune.
-- To release: raise `version` in `gradle.properties`, write the notes in `changelog/<version>.md` (through humanizer), commit, then push a tag `v<version>`. `.github/workflows/release.yml` builds, runs the self-checks and puts the jar on GitHub, Modrinth (project `d7CJwntk`) and CurseForge (project `1811146`). It reads the tokens from the repo secrets `MODRINTH_TOKEN` and `CURSEFORGE_TOKEN`. A new Minecraft version needs its id in the CurseForge step and its name in the Modrinth one.
+- To release: raise `version` in `gradle.properties`, write the notes in `changelog/<version>.md` (through humanizer), commit, then push a tag `v<version>`. `.github/workflows/release.yml` builds, runs the self-checks and puts the jar on GitHub, Modrinth (project `d7CJwntk`) and CurseForge (project `1811146`). It reads the tokens from the repo secrets `MODRINTH_TOKEN` and `CURSEFORGE_TOKEN`. Run by hand from the Actions tab, it only checks the tokens, the build and the self-checks. A new Minecraft version needs its id in the CurseForge step and its name in the Modrinth one.
 - Songs go in `disco/` inside the game folder as Ogg Vorbis (`ffmpeg -i song.mp3 song.ogg`). `music/` in this repo is git-ignored because the songs are copyrighted.
 
 ## Conventions

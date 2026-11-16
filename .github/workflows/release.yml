@@ -1,10 +1,12 @@
 # Publishes a release when a tag like v0.3.0 is pushed: builds the jar, runs the self-checks, then puts the same jar
-# on GitHub, Modrinth and CurseForge with the notes from changelog/<version>.md.
+# on GitHub, Modrinth and CurseForge with the notes from changelog/<version>.md. Run by hand from the Actions tab, it
+# checks the tokens, the build and the self-checks and publishes nothing.
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -23,7 +25,16 @@ jobs:
           distribution: temurin
           java-version: "25"
 
+      - name: Check the tokens
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          CURSEFORGE_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
+        run: |
+          curl -sSf -o /dev/null https://api.modrinth.com/v2/user -H "Authorization: $MODRINTH_TOKEN" -H "User-Agent: $USER_AGENT"
+          curl -sSf -o /dev/null https://minecraft.curseforge.com/api/game/version-types -H "X-Api-Token: $CURSEFORGE_TOKEN"
+
       - name: Check the tag, the version and the notes agree
+        if: github.ref_type == 'tag'
         run: |
           VERSION="${TAG#v}"
           test "$(grep '^version=' gradle.properties | cut -d= -f2)" = "$VERSION" || { echo "gradle.properties says another version than $TAG"; exit 1; }
@@ -41,11 +52,13 @@ jobs:
           (cd src/main/java && java it/vitoesposito/mineatdisco/LiveBeat.java)
 
       - name: GitHub release
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$TAG" "$JAR" --title "Mine at Disco $VERSION" --notes-file "$NOTES"
 
       - name: Modrinth
+        if: github.ref_type == 'tag'
         env:
           TOKEN: ${{ secrets.MODRINTH_TOKEN }}
         run: |
@@ -62,6 +75,7 @@ jobs:
             -H "Content-Type: application/json" -d '{"environment":"client_only"}'
 
       - name: CurseForge
+        if: github.ref_type == 'tag'
         env:
           TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
         run: |
