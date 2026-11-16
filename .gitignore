@@ -8,3 +8,4 @@ run/
 # Songs are copyrighted, keep them local.
 music/
 *:Zone.Identifier
+.impeccable/
