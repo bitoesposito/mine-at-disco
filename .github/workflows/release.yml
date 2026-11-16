@@ -1,0 +1,75 @@
+# Publishes a release when a tag like v0.3.0 is pushed: builds the jar, runs the self-checks, then puts the same jar
+# on GitHub, Modrinth and CurseForge with the notes from changelog/<version>.md.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.ref_name }}
+      USER_AGENT: bitoesposito/mine-at-disco (github.com/bitoesposito/mine-at-disco)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Check the tag, the version and the notes agree
+        run: |
+          VERSION="${TAG#v}"
+          test "$(grep '^version=' gradle.properties | cut -d= -f2)" = "$VERSION" || { echo "gradle.properties says another version than $TAG"; exit 1; }
+          test -f "changelog/$VERSION.md" || { echo "changelog/$VERSION.md is missing"; exit 1; }
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "NOTES=changelog/$VERSION.md" >> "$GITHUB_ENV"
+          echo "JAR=build/libs/mine-at-disco-$VERSION.jar" >> "$GITHUB_ENV"
+
+      - name: Build and run the self-checks
+        run: |
+          ./gradlew build
+          java src/main/java/it/vitoesposito/mineatdisco/BeatTracker.java
+          java src/main/java/it/vitoesposito/mineatdisco/AudioClock.java
+          java src/main/java/it/vitoesposito/mineatdisco/YouTube.java
+          (cd src/main/java && java it/vitoesposito/mineatdisco/LiveBeat.java)
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$TAG" "$JAR" --title "Mine at Disco $VERSION" --notes-file "$NOTES"
+
+      - name: Modrinth
+        env:
+          TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+        run: |
+          # Fabric API is P7dR8mSH on Modrinth; d7CJwntk is this project.
+          jq -n --rawfile notes "$NOTES" --arg version "$VERSION" '{
+            name: ("Mine at Disco " + $version), version_number: $version, changelog: $notes,
+            dependencies: [{project_id: "P7dR8mSH", dependency_type: "required"}],
+            game_versions: ["26.3"], loaders: ["fabric"], version_type: "release", featured: true,
+            project_id: "d7CJwntk", file_parts: ["jar"], primary_file: "jar"}' > modrinth.json
+          id=$(curl -sSf -X POST https://api.modrinth.com/v2/version -H "Authorization: $TOKEN" -H "User-Agent: $USER_AGENT" \
+            -F "data=<modrinth.json;type=application/json" -F "jar=@$JAR;type=application/java-archive" | jq -r .id)
+          # Modrinth keeps the client or server side on each version, and the v2 upload leaves it unknown.
+          curl -sSf -X PATCH "https://api.modrinth.com/v3/version/$id" -H "Authorization: $TOKEN" -H "User-Agent: $USER_AGENT" \
+            -H "Content-Type: application/json" -d '{"environment":"client_only"}'
+
+      - name: CurseForge
+        env:
+          TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
+        run: |
+          # ponytail: CurseForge's ids for Minecraft 26.3 (17045), Fabric (7499), Java 25 (14454) and Client (9638) are
+          # written here. For a new Minecraft version, look its id up at minecraft.curseforge.com/api/game/versions.
+          jq -n --rawfile notes "$NOTES" --arg version "$VERSION" '{
+            changelog: $notes, changelogType: "markdown", displayName: ("Mine at Disco " + $version),
+            gameVersions: [17045, 7499, 14454, 9638], releaseType: "release",
+            relations: {projects: [{slug: "fabric-api", type: "requiredDependency"}]}}' > curseforge.json
+          curl -sSf -X POST https://minecraft.curseforge.com/api/projects/1811146/upload-file -H "X-Api-Token: $TOKEN" \
+            -F "metadata=<curseforge.json" -F "file=@$JAR"
