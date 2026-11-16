@@ -67,6 +67,7 @@ import net.minecraft.client.resources.sounds.SoundInstance;
 import net.minecraft.client.resources.sounds.TickableSoundInstance;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.component.CustomData;
@@ -135,6 +136,8 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static final Path PLAYLISTS = SONGS.resolve("playlists");
 	/** Key in a burned disc's custom data that names its song. */
 	private static final String DISC_TAG = "mineatdisco_song";
+	/** Key in the custom data of a blank disc, which the mod's recipe crafts from coal and copper. */
+	private static final String BLANK_TAG = "mineatdisco_blank";
 	/** Blocks a jukebox carries, like vanilla's: loud up close, silent this far away. */
 	private static final double JUKEBOX_RANGE = 64;
 	/** Seconds into a song after which the previous button restarts it instead of going back. */
@@ -2154,6 +2157,12 @@ public final class MineAtDisco implements ClientModInitializer {
 		return song.isEmpty() ? null : song;
 	}
 
+	/** A blank disc from the mod's recipe: a record without a song yet, which no jukebox takes. */
+	private static boolean isBlank(ItemStack item) {
+		CustomData data = item.get(DataComponents.CUSTOM_DATA);
+		return data != null && data.copyTag().getBooleanOr(BLANK_TAG, false);
+	}
+
 	/** Server side, in a world this game runs: a jukebox is about to hold {@code item}. Remembers a burned disc's song. */
 	public static void jukeboxItem(Level level, BlockPos pos, ItemStack item) {
 		if (level == null || level.isClientSide()) {
@@ -2200,8 +2209,9 @@ public final class MineAtDisco implements ClientModInitializer {
 	}
 
 	/**
-	 * Burns a song onto the music disc in the player's main hand, or onto a new disc in creative, so a jukebox plays it
-	 * in the world. Only in a world this game runs: the item changes on the integrated server.
+	 * Burns a song onto the blank disc or music disc in the player's main hand, or onto a new disc in creative, so a
+	 * jukebox plays it in the world. The disc then looks like the one the song wears in the menu. Only in a world this
+	 * game runs: the item changes on the integrated server.
 	 */
 	private static void burnDisc(String song) {
 		Minecraft client = Minecraft.getInstance();
@@ -2211,24 +2221,32 @@ public final class MineAtDisco implements ClientModInitializer {
 			return;
 		}
 		var id = client.player.getUUID();
-		Item blank = IconButton.disc(song);
+		Item look = IconButton.disc(song);
 		server.execute(() -> {
 			ServerPlayer player = server.getPlayerList().getPlayer(id);
 			if (player == null) {
 				return;
 			}
 			ItemStack held = player.getMainHandItem();
-			boolean onHeld = held.has(DataComponents.JUKEBOX_PLAYABLE);
+			boolean onHeld = held.has(DataComponents.JUKEBOX_PLAYABLE) || isBlank(held);
 			if (!onHeld && !player.getAbilities().instabuild) {
 				client.execute(() -> tell(Component.translatable("mineatdisco.disc.hold").withStyle(ChatFormatting.RED)));
 				return;
 			}
-			ItemStack disc = onHeld ? held : new ItemStack(blank);
+			ItemStack disc = onHeld ? held : new ItemStack(look);
+			if (!disc.has(DataComponents.JUKEBOX_PLAYABLE)) {
+				// A blank disc gets a record's jukebox part now that it holds a song; the record's own line stays hidden.
+				disc.set(DataComponents.JUKEBOX_PLAYABLE, new ItemStack(Items.MUSIC_DISC_13).get(DataComponents.JUKEBOX_PLAYABLE));
+			}
+			disc.set(DataComponents.ITEM_MODEL, BuiltInRegistries.ITEM.getKey(look));
 			disc.set(DataComponents.CUSTOM_NAME, Component.literal(song).withStyle(style -> style.withItalic(false).withColor(ChatFormatting.LIGHT_PURPLE)));
 			disc.set(DataComponents.LORE, new ItemLore(List.of(Component.translatable("mineatdisco.disc.lore")
 					.withStyle(style -> style.withItalic(false).withColor(ChatFormatting.GRAY)))));
 			disc.set(DataComponents.TOOLTIP_DISPLAY, TooltipDisplay.DEFAULT.withHidden(DataComponents.JUKEBOX_PLAYABLE, true));
-			CustomData.update(DataComponents.CUSTOM_DATA, disc, tag -> tag.putString(DISC_TAG, song));
+			CustomData.update(DataComponents.CUSTOM_DATA, disc, tag -> {
+				tag.putString(DISC_TAG, song);
+				tag.remove(BLANK_TAG);
+			});
 			if (!onHeld) {
 				player.getInventory().add(disc);
 			}

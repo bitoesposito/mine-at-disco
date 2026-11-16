@@ -118,10 +118,10 @@
 	"mineatdisco.playlist.delete.title": "Delete playlist %s?",
 	"mineatdisco.playlist.delete.message": "The songs stay in your disco folder.",
 	"mineatdisco.disc.burn": "Burn to disc",
-	"mineatdisco.disc.burn.tooltip": "Burn this song onto the music disc in your hand, then play it in a jukebox",
+	"mineatdisco.disc.burn.tooltip": "Burn this song onto the blank disc or music disc in your hand, then play it in a jukebox",
 	"mineatdisco.disc.burn.creative": "Get a music disc with this song for a jukebox",
 	"mineatdisco.disc.burned": "Burned %s onto a music disc",
-	"mineatdisco.disc.hold": "Hold a music disc in your main hand to burn the song onto it",
+	"mineatdisco.disc.hold": "Hold a blank disc or a music disc in your main hand to burn the song onto it",
 	"mineatdisco.disc.lore": "Mine at Disco song",
 	"mineatdisco.disc.solo": "Burning discs needs a world you play yourself",
 	"mineatdisco.jukebox.playing": "The jukebox plays %s at %s BPM",
@@ -131,5 +131,7 @@
 	"mineatdisco.youtube.all": "Download All %s",
 	"mineatdisco.youtube.state.added": "Added",
 	"mineatdisco.youtube.state.queued": "Queued",
-	"mineatdisco.player.seek": "Song position"
+	"mineatdisco.player.seek": "Song position",
+	"item.mineatdisco.blank_disc": "Blank Disc",
+	"item.mineatdisco.blank_disc.hint": "Burn a song onto it from the Mine at Disco menu"
 }

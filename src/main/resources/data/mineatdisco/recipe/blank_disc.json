@@ -1,0 +1,24 @@
+{
+	"type": "minecraft:crafting_shaped",
+	"category": "misc",
+	"pattern": [
+		" C ",
+		"CIC",
+		" C "
+	],
+	"key": {
+		"C": "#minecraft:coals",
+		"I": "minecraft:copper_ingot"
+	},
+	"result": {
+		"id": "minecraft:music_disc_13",
+		"count": 1,
+		"components": {
+			"minecraft:item_model": "mineatdisco:blank_disc",
+			"minecraft:item_name": {"translate": "item.mineatdisco.blank_disc"},
+			"minecraft:lore": [{"translate": "item.mineatdisco.blank_disc.hint", "color": "gray", "italic": false}],
+			"minecraft:custom_data": {"mineatdisco_blank": true},
+			"!minecraft:jukebox_playable": {}
+		}
+	}
+}
