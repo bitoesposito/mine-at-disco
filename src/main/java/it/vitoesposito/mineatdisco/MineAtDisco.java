@@ -161,7 +161,7 @@ public final class MineAtDisco implements ClientModInitializer {
 	/** Ticks after raising a shield during which blocking an attack counts as a perfect parry. */
 	private static final int PARRY_TICKS = 7;
 
-	private record Song(ShortBuffer pcm, int channels, int sampleRate, double[] beats, float[] energy, float[] punch) {
+	private record Song(ShortBuffer pcm, int channels, int sampleRate, double[] beats, float[] energy, float[] punch, byte[] roots) {
 	}
 
 	private record Deferred(Runnable action, double due) {
@@ -261,6 +261,8 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static volatile String downloadName;
 	/** From 0 to 1. */
 	private static volatile double downloadProgress;
+	/** Each beat's strongest pitch class, see BeatTracker.roots. */
+	private static byte[] roots = new byte[0];
 	private static String currentSong = "";
 	/** The song being decoded, null otherwise, so the menu can say so instead of "no music". */
 	private static String loadingSong;
@@ -458,7 +460,15 @@ public final class MineAtDisco implements ClientModInitializer {
 		boolean launch = name.endsWith(".throw") || name.endsWith(".shoot") || name.endsWith(".launch");
 		boolean eighth = launch || name.endsWith(".hit") || name.endsWith(".step") || name.endsWith(".break")
 				|| name.endsWith(".hurt") || name.endsWith(".death") || name.endsWith(".burp")
-				|| name.startsWith("entity.player.attack.") || name.equals("item.shield.block");
+				|| name.startsWith("entity.player.attack.");
+		if (name.equals("item.shield.block")) {
+			// A blocked hit lands on the beat whenever it arrives, with a bell in the song's key.
+			double x = sound.getX();
+			double y = sound.getY();
+			double z = sound.getZ();
+			return onBeat(() -> chime(x, y, z, false), () -> play.accept(sound));
+		}
+
 		// A throw or shot the player let go close to the beat gets an answer on the HUD.
 		LocalPlayer player = Minecraft.getInstance().player;
 		float thrownOnBeat = launch && player != null && player.distanceToSqr(sound.getX(), sound.getY(), sound.getZ()) < 4
@@ -654,7 +664,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 		attacker.knockback(1.4, blocker.getX() - attacker.getX(), blocker.getZ() - attacker.getZ(), source, amount);
 		int id = attacker.getId();
-		Minecraft.getInstance().execute(() -> parryBurst(id));
+		Minecraft.getInstance().execute(() -> onBeat(() -> parryBurst(id), null));
 		return true;
 	}
 
@@ -662,7 +672,7 @@ public final class MineAtDisco implements ClientModInitializer {
 	public static void tryParryProjectile(LivingEntity blocker, Entity projectile) {
 		if (syncMobs() && blocker.getTicksUsingItem() <= PARRY_TICKS) {
 			int id = projectile != null ? projectile.getId() : blocker.getId();
-			Minecraft.getInstance().execute(() -> parryBurst(id));
+			Minecraft.getInstance().execute(() -> onBeat(() -> parryBurst(id), null));
 		}
 	}
 
@@ -675,11 +685,48 @@ public final class MineAtDisco implements ClientModInitializer {
 		Entity center = target != null ? target : client.player;
 		playImmediate(SoundEvents.ANVIL_LAND, SoundSource.PLAYERS, 0.55f * drive(), 1.8f,
 				center.getX(), center.getY(), center.getZ());
-		playImmediate(SoundEvents.BELL_BLOCK, SoundSource.PLAYERS, 0.9f * drive(), 1.5f,
-				center.getX(), center.getY(), center.getZ());
+		chime(center.getX(), center.getY(), center.getZ(), true);
+		flashHud(1);
 		client.level.addParticle(ParticleTypes.SWEEP_ATTACK, center.getX(), center.getY(0.5), center.getZ(), 0, 0, 0);
 		burst(center, ParticleTypes.CRIT, amount(20 * drive()));
 		burst(center, ParticleTypes.ENCHANTED_HIT, amount(14 * drive()));
+	}
+
+	/**
+	 * Runs {@code effect} on the next beat, or now when a beat has just passed, like a held sound. {@code sound}, if
+	 * any, plays with it; the return value says whether the caller should leave it to the mod.
+	 */
+	private static boolean onBeat(Runnable effect, Runnable sound) {
+		double due = active() ? nextLine(1) : Double.NaN;
+		if (Double.isNaN(due)) {
+			effect.run();
+			return false;
+		}
+		deferred.add(new Deferred(() -> {
+			if (sound != null) {
+				sound.run();
+			}
+			effect.run();
+		}, due));
+		return sound != null;
+	}
+
+	/**
+	 * Note block bells in the key the song plays right now: the root alone for a blocked hit; root, fifth and the
+	 * root an octave down for a perfect parry. Note blocks are tuned so pitch 1 is F sharp, and pitch C to B stays
+	 * between 0.7 and 1.34, inside the game's 0.5 to 2.
+	 */
+	private static void chime(double x, double y, double z, boolean perfect) {
+		int beat = (int) Math.floor(audioBeatNow);
+		int root = beat >= 0 && beat < roots.length ? roots[beat] : -1;
+		float pitch = root < 0 ? 1 : (float) Math.pow(2, (root - 6) / 12.0);
+		float volume = 0.8f * Math.max(0.5f, drive());
+		playImmediate(SoundEvents.NOTE_BLOCK_BELL.value(), SoundSource.PLAYERS, volume, pitch, x, y, z);
+		if (perfect) {
+			float fifth = pitch * (float) Math.pow(2, 7 / 12.0);
+			playImmediate(SoundEvents.NOTE_BLOCK_CHIME.value(), SoundSource.PLAYERS, volume * 0.7f, fifth > 2 ? fifth / 2 : fifth, x, y, z);
+			playImmediate(SoundEvents.NOTE_BLOCK_PLING.value(), SoundSource.PLAYERS, volume * 0.6f, pitch, x, y, z);
+		}
 	}
 
 	private static void playImmediate(SoundEvent sound, SoundSource category, float volume, float pitch,
@@ -1221,6 +1268,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		beats = snapshot.beats();
 		energy = snapshot.energy();
 		drops = snapshot.drops();
+		roots = snapshot.roots();
 		livePunch.advance(capture);
 		// Say once when the beat is found, so the player knows the wait is over; say again after losing it.
 		boolean locked = recentBpm() > 0;
@@ -1434,7 +1482,7 @@ public final class MineAtDisco implements ClientModInitializer {
 			}
 			double[] beats = BeatTracker.track(pcm, channels.get(0), rate.get(0));
 			return new Song(pcm, channels.get(0), rate.get(0), beats, BeatTracker.energy(pcm, channels.get(0), rate.get(0), beats),
-					BeatTracker.punch(pcm, channels.get(0), rate.get(0)));
+					BeatTracker.punch(pcm, channels.get(0), rate.get(0)), BeatTracker.roots(pcm, channels.get(0), rate.get(0), beats));
 		} catch (IOException e) {
 			throw new UncheckedIOException(e);
 		} finally {
@@ -1457,6 +1505,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		energy = song.energy();
 		drops = BeatTracker.drops(energy);
 		punch = song.punch();
+		roots = song.roots();
 		paused = false;
 		clock.reset();
 		playedAt = 0;
@@ -1502,6 +1551,7 @@ public final class MineAtDisco implements ClientModInitializer {
 		beats = new double[0];
 		drops = new boolean[0];
 		punch = new float[0];
+		roots = new byte[0];
 		audioBeatNow = -1;
 		telegraphedMobs.clear();
 		// Every song starts its clock at zero, so times from the last one would read as the future.
