@@ -3,9 +3,14 @@ package it.vitoesposito.mineatdisco;
 import static net.fabricmc.fabric.api.client.command.v2.ClientCommands.argument;
 import static net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal;
 
+import com.mojang.blaze3d.Blaze3D;
 import com.mojang.blaze3d.platform.InputConstants;
+import com.mojang.logging.LogUtils;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.sun.jna.platform.win32.Advapi32Util;
+import com.sun.jna.platform.win32.Kernel32Util;
+import com.sun.jna.platform.win32.WinReg;
 import it.vitoesposito.mineatdisco.mixin.FallingLeavesInvoker;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -13,6 +18,7 @@ import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.nio.ShortBuffer;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -20,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -34,12 +41,17 @@ import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.VanillaHudElements;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Options;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.components.Tooltip;
+import net.minecraft.client.gui.screens.ConfirmScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -57,19 +69,24 @@ import net.minecraft.core.particles.DustParticleOptions;
 import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.network.chat.Component;
+import net.minecraft.client.renderer.RenderPipelines;
+import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.resources.Identifier;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
+import net.minecraft.util.Util;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BowItem;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.Consumable;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
@@ -89,12 +106,23 @@ import org.lwjgl.system.libc.LibCStdlib;
 
 /** Plays a song from the disco folder and moves the game to its beat. */
 public final class MineAtDisco implements ClientModInitializer {
+	private static final org.slf4j.Logger LOGGER = LogUtils.getLogger();
+	/** Live mode captures system audio through WASAPI, which only Windows has. */
+	private static final boolean WINDOWS = Util.getPlatform() == Util.OS.WINDOWS;
 	private static final Path SONGS = FabricLoader.getInstance().getGameDir().resolve("disco");
 	/**
 	 * The player's extra audio delay in ms. It used to hold the whole output latency; now OpenAL reports that, so the
 	 * file got a new name and old values, which would count the latency twice, are left behind.
 	 */
 	private static final Path OFFSET_FILE = SONGS.resolve("audio-offset.txt");
+	/** Written once the player has been told which key opens the menu, so the hint shows once per install. */
+	private static final Path HINT_FILE = SONGS.resolve(".hint-shown");
+	/** Where a player can drop yt-dlp and FFmpeg instead of installing them. */
+	private static final Path TOOLS = SONGS.resolve("tools");
+	private static final Identifier PANEL = Identifier.withDefaultNamespace("popup/background");
+	private static final Identifier NOW_PLAYING = Identifier.withDefaultNamespace("toast/now_playing");
+	private static final Identifier MUSIC_NOTES = Identifier.withDefaultNamespace("icon/music_notes");
+	private static final int GRAY = 0xFFA0A0A0;
 	/** Warm-up taps skipped before the offset follows, like lazer's tap-for-BPM button skips its first four. */
 	private static final int TAPS_TO_IGNORE = 2;
 	/** Most recent taps the offset is the median of, so one stray tap moves nothing. */
@@ -224,7 +252,20 @@ public final class MineAtDisco implements ClientModInitializer {
 	private static KeyMapping menuKey;
 	private static KeyMapping tapKey;
 	private static boolean openMenu;
+	/** Whether the current world has had its first frame, when the mod checks the volume and shows the hint. */
+	private static boolean inWorld;
+	/** Set by {@code /disco live}, so the warning opens once the chat has closed. */
+	private static boolean confirmLive;
+	/** The YouTube title being saved and its file name, both null when nothing downloads. */
+	private static volatile String downloadTitle;
+	private static volatile String downloadName;
+	/** From 0 to 1. */
+	private static volatile double downloadProgress;
 	private static String currentSong = "";
+	/** The song being decoded, null otherwise, so the menu can say so instead of "no music". */
+	private static String loadingSong;
+	/** Whether live mode has announced that it found the beat. */
+	private static boolean liveLocked;
 	private static final List<Double> taps = new ArrayList<>();
 	private static double lastTapAt = Double.NEGATIVE_INFINITY;
 	/** How far deliberate clicks near the beat landed from it, in seconds, see suggestedOffset. */
@@ -267,12 +308,11 @@ public final class MineAtDisco implements ClientModInitializer {
 						.suggests((command, builder) -> SharedSuggestionProvider.suggest(songs(), builder))
 						.executes(command -> play(command.getSource(), StringArgumentType.getString(command, "song")))))
 				.then(literal("live").executes(command -> {
-					startLive(command.getSource().getClient());
+					confirmLive = true;
 					return 1;
 				}))
 				.then(literal("stop").executes(command -> {
-					stop();
-					command.getSource().sendFeedback(Component.translatable("mineatdisco.stopped"));
+					stopWithMessage();
 					return 1;
 				}))
 				.then(literal("x2").executes(command -> {
@@ -1102,6 +1142,8 @@ public final class MineAtDisco implements ClientModInitializer {
 			return files.map(file -> file.getFileName().toString())
 					.filter(name -> name.endsWith(".ogg"))
 					.map(name -> name.substring(0, name.length() - 4))
+					// A song still being written by the YouTube download would fail to load.
+					.filter(name -> !name.equals(downloadName) && !name.endsWith(".temp"))
 					.sorted()
 					.toList();
 		} catch (IOException e) {
@@ -1124,7 +1166,14 @@ public final class MineAtDisco implements ClientModInitializer {
 	 * the timeline updates twice a second. Works on Windows only, where WASAPI can capture what the speakers play.
 	 */
 	private static void startLive(Minecraft client) {
+		if (!WINDOWS) {
+			if (client.player != null) {
+				client.player.sendSystemMessage(Component.translatable("mineatdisco.live.windows").withStyle(ChatFormatting.RED));
+			}
+			return;
+		}
 		stop();
+		liveLocked = false;
 		liveEpoch = System.nanoTime() / 1e9;
 		latency = deviceLatency();
 		livePunch = new LivePunch();
@@ -1159,9 +1208,11 @@ public final class MineAtDisco implements ClientModInitializer {
 	/** Takes the newest live timeline and works through the audio captured since the last frame. */
 	private static void readLive() {
 		if (capture.failure() != null) {
+			// The player gets plain words; the HRESULT or library error goes to the log for bug reports.
+			LOGGER.warn("Mine at Disco could not capture system audio: {}", capture.failure());
 			LocalPlayer player = Minecraft.getInstance().player;
 			if (player != null) {
-				player.sendSystemMessage(Component.translatable("mineatdisco.live.failed", capture.failure()));
+				player.sendSystemMessage(Component.translatable("mineatdisco.live.failed").withStyle(ChatFormatting.RED));
 			}
 			stop();
 			return;
@@ -1171,6 +1222,13 @@ public final class MineAtDisco implements ClientModInitializer {
 		energy = snapshot.energy();
 		drops = snapshot.drops();
 		livePunch.advance(capture);
+		// Say once when the beat is found, so the player knows the wait is over; say again after losing it.
+		boolean locked = recentBpm() > 0;
+		LocalPlayer player = Minecraft.getInstance().player;
+		if (locked && !liveLocked && player != null) {
+			player.sendOverlayMessage(Component.translatable("mineatdisco.live.locked", recentBpm()));
+		}
+		liveLocked = locked;
 	}
 
 	/** Output latency of Minecraft's audio device in seconds, as OpenAL Soft reports it, or 0 when it doesn't. */
@@ -1192,15 +1250,19 @@ public final class MineAtDisco implements ClientModInitializer {
 
 	private static void playSong(String name, Minecraft client) {
 		stop();
+		loadingSong = name;
 		int mine = request;
 		if (client.player != null) {
 			client.player.sendOverlayMessage(Component.translatable("mineatdisco.loading", name));
 		}
 		// Decoding and beat tracking take about a second, so they run off the client thread.
 		CompletableFuture.supplyAsync(() -> decode(SONGS.resolve(name + ".ogg"))).whenCompleteAsync((song, error) -> {
+			if (mine == request) {
+				loadingSong = null;
+			}
 			if (song == null) {
-				if (client.player != null) {
-					client.player.sendSystemMessage(Component.translatable("mineatdisco.failed", name));
+				if (client.player != null && mine == request) {
+					client.player.sendSystemMessage(Component.translatable("mineatdisco.failed", name).withStyle(ChatFormatting.RED));
 				}
 			} else if (mine != request) {
 				LibCStdlib.free(song.pcm());
@@ -1212,7 +1274,7 @@ public final class MineAtDisco implements ClientModInitializer {
 					client.player.sendOverlayMessage(
 							Component.translatable("mineatdisco.playing", name, Math.round(BeatTracker.bpm(beats))));
 					if (volume == 0) {
-						client.player.sendSystemMessage(Component.translatable("mineatdisco.muted"));
+						client.player.sendSystemMessage(Component.translatable("mineatdisco.muted").withStyle(ChatFormatting.YELLOW));
 					}
 				}
 			}
@@ -1221,8 +1283,15 @@ public final class MineAtDisco implements ClientModInitializer {
 
 	/** Doubles or halves the tracked beat grid for songs whose tempo reads half or double. */
 	private static void scaleTempo(boolean doubleTempo) {
-		// ponytail: live mode rebuilds its timeline twice a second, so tempo fixes only apply to local songs.
-		if (beats.length < 4 || live()) {
+		LocalPlayer messages = Minecraft.getInstance().player;
+		// Live mode rebuilds its timeline twice a second, so tempo fixes only apply to local songs.
+		if (live()) {
+			if (messages != null) {
+				messages.sendOverlayMessage(Component.translatable("mineatdisco.tempo.live"));
+			}
+			return;
+		}
+		if (beats.length < 4) {
 			return;
 		}
 		double bpm = BeatTracker.bpm(beats);
@@ -1250,6 +1319,9 @@ public final class MineAtDisco implements ClientModInitializer {
 			beats = nextBeats;
 			energy = nextEnergy;
 		} else {
+			if (messages != null) {
+				messages.sendOverlayMessage(Component.translatable("mineatdisco.tempo.limit", doubleTempo ? 300 : 45));
+			}
 			return;
 		}
 		drops = BeatTracker.drops(energy);
@@ -1270,7 +1342,11 @@ public final class MineAtDisco implements ClientModInitializer {
 	 * ponytail: taps are measured from the nearest beat, so an offset beyond half a beat needs /disco offset.
 	 */
 	private static void tapOffset() {
+		Minecraft client = Minecraft.getInstance();
 		if (!playing() || paused || beats.length < 2) {
+			if (client.player != null && !paused) {
+				client.player.sendOverlayMessage(Component.translatable("mineatdisco.tap.no_song"));
+			}
 			return;
 		}
 		// The player taps to what they hear, which the speakers play a device latency after the mixer.
@@ -1284,18 +1360,17 @@ public final class MineAtDisco implements ClientModInitializer {
 		}
 		lastTapAt = now;
 		taps.add(error);
-		Minecraft client = Minecraft.getInstance();
 		client.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.2f));
 		if (taps.size() <= TAPS_TO_IGNORE) {
 			if (client.player != null) {
-				client.player.sendOverlayMessage(Component.translatable("mineatdisco.tap.more", taps.size(), TAPS_TO_IGNORE + 1));
+				client.player.sendOverlayMessage(Component.translatable("mineatdisco.tap.more"));
 			}
 			return;
 		}
 		int ms = Mth.clamp((int) Math.round(median(taps.subList(Math.max(TAPS_TO_IGNORE, taps.size() - TAPS_KEPT), taps.size())) * 1000), -500, 500);
 		saveOffset(ms);
 		if (client.player != null) {
-			client.player.sendOverlayMessage(Component.translatable("mineatdisco.offset", ms));
+			client.player.sendOverlayMessage(Component.translatable("mineatdisco.tap.offset", ms, taps.size() - TAPS_TO_IGNORE));
 		}
 	}
 
@@ -1399,8 +1474,18 @@ public final class MineAtDisco implements ClientModInitializer {
 		return source != 0 && AL10.alIsSource(source) && AL10.alGetSourcei(source, AL10.AL_BUFFER) == buffer;
 	}
 
+	/** Stops the music and says so, for the command and the menu button. */
+	private static void stopWithMessage() {
+		stop();
+		LocalPlayer player = Minecraft.getInstance().player;
+		if (player != null) {
+			player.sendOverlayMessage(Component.translatable("mineatdisco.stopped"));
+		}
+	}
+
 	private static void stop() {
 		request++;
+		loadingSong = null;
 		if (capture != null) {
 			liveUpdates.shutdownNow();
 			capture.close();
@@ -1445,11 +1530,36 @@ public final class MineAtDisco implements ClientModInitializer {
 			openMenu = false;
 			client.gui.setScreen(new DiscoScreen());
 		}
+		if (confirmLive) {
+			confirmLive = false;
+			askLive(client, null);
+		}
+		if (client.level == null) {
+			inWorld = false;
+		} else if (!inWorld && client.player != null && client.gui.screen() == null) {
+			// Once per world, when it first shows: offer the volume sliders if songs would be silent, and in the very
+			// first world, say which key opens the menu.
+			inWorld = true;
+			if (client.options.getSoundSourceVolume(SoundSource.MASTER) == 0 || client.options.getSoundSourceVolume(SoundSource.MUSIC) == 0) {
+				client.gui.setScreen(new VolumeScreen());
+			}
+			if (!Files.exists(HINT_FILE)) {
+				client.player.sendOverlayMessage(Component.translatable("mineatdisco.hint", menuKey.getTranslatedKeyMessage()));
+				try {
+					Files.writeString(HINT_FILE, "");
+				} catch (IOException e) {
+					// Then the hint shows again next time, which is harmless.
+				}
+			}
+		}
 		if (!playing()) {
 			return;
 		}
-		if (client.level == null
-				|| source != 0 && (!alive() || AL10.alGetSourcei(source, AL10.AL_SOURCE_STATE) == AL10.AL_STOPPED)) {
+		boolean ended = source != 0 && alive() && AL10.alGetSourcei(source, AL10.AL_SOURCE_STATE) == AL10.AL_STOPPED;
+		if (client.level == null || source != 0 && !alive() || ended) {
+			if (ended && client.player != null) {
+				client.player.sendOverlayMessage(Component.translatable("mineatdisco.ended", currentSong, menuKey.getTranslatedKeyMessage()));
+			}
 			stop();
 			return;
 		}
@@ -1639,14 +1749,193 @@ public final class MineAtDisco implements ClientModInitializer {
 		return 1;
 	}
 
+	/** Asks before live mode starts: it is experimental, guesses the beat while it listens and can lose it. */
+	private static void askLive(Minecraft client, Screen parent) {
+		if (!WINDOWS) {
+			// startLive says that it needs Windows.
+			startLive(client);
+			return;
+		}
+		client.gui.setScreen(new ConfirmScreen(yes -> {
+			if (yes) {
+				startLive(client);
+			}
+			client.gui.setScreen(parent);
+		}, Component.translatable("mineatdisco.live.confirm.title").withStyle(ChatFormatting.YELLOW),
+				Component.translatable("mineatdisco.live.confirm.message"),
+				Component.translatable("mineatdisco.live.confirm.yes"), CommonComponents.GUI_CANCEL));
+	}
+
+	/** Saves a YouTube result into the songs folder in the background, then plays it if nothing else plays. */
+	private static void download(YouTube.Result result) {
+		if (downloadTitle != null) {
+			return;
+		}
+		downloadTitle = result.title();
+		downloadName = YouTube.fileName(result.title());
+		downloadProgress = 0;
+		Minecraft client = Minecraft.getInstance();
+		CompletableFuture.supplyAsync(() -> {
+			try {
+				return YouTube.download(result, SONGS, toolDirs(), progress -> downloadProgress = progress);
+			} catch (IOException | InterruptedException e) {
+				throw new CompletionException(e);
+			}
+		}).whenCompleteAsync((file, error) -> {
+			String name = downloadName;
+			downloadTitle = null;
+			downloadName = null;
+			if (error != null) {
+				LOGGER.warn("Mine at Disco could not download {}: {}", result.id(), error.getCause() == null ? error : error.getCause().getMessage());
+				if (client.player != null) {
+					client.player.sendSystemMessage(Component.translatable("mineatdisco.youtube.failed", shortName(result.title())).withStyle(ChatFormatting.RED));
+				}
+				return;
+			}
+			if (client.player != null) {
+				client.player.sendSystemMessage(Component.translatable("mineatdisco.youtube.added", name));
+			}
+			if (!playing() && loadingSong == null && client.level != null) {
+				playSong(name, client);
+			}
+		}, client);
+	}
+
 	/**
-	 * In-world song picker and calibration screen. Keeps the game unpaused and leaves the crosshair clear so the player
-	 * can watch the beat cue while tapping Space or adjusting tempo.
+	 * Where to look for yt-dlp, FFmpeg and Deno: the mod's tools folder, where winget links what it installs, the PATH
+	 * Windows has now and the PATH the game started with. Installers write the new PATH to the registry, and a running
+	 * game never sees it. Without Developer Mode winget can't make links and adds each program's folder there instead.
+	 */
+	private static List<Path> toolDirs() {
+		List<String> entries = new ArrayList<>();
+		String local = System.getenv("LOCALAPPDATA");
+		if (local != null) {
+			entries.add(local + "\\Microsoft\\WinGet\\Links");
+		}
+		if (WINDOWS) {
+			WinReg.HKEY[] roots = {WinReg.HKEY_CURRENT_USER, WinReg.HKEY_LOCAL_MACHINE};
+			String[] keys = {"Environment", "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"};
+			for (int i = 0; i < roots.length; i++) {
+				try {
+					if (Advapi32Util.registryGetValue(roots[i], keys[i], "Path") instanceof String path) {
+						entries.addAll(List.of(Kernel32Util.expandEnvironmentStrings(path).split(";")));
+					}
+				} catch (RuntimeException e) {
+					// No such value: the PATH the game started with still counts.
+				}
+			}
+		}
+		entries.addAll(List.of(System.getenv().getOrDefault("PATH", "").split(java.io.File.pathSeparator)));
+		List<Path> dirs = new ArrayList<>(List.of(TOOLS));
+		for (String entry : entries) {
+			try {
+				if (!entry.isBlank()) {
+					dirs.add(Path.of(entry.strip()));
+				}
+			} catch (InvalidPathException e) {
+				// A broken PATH entry can't hold the program.
+			}
+		}
+		return dirs;
+	}
+
+	/** A song or video title cut to fit a status line. */
+	private static String shortName(String name) {
+		return name.length() <= 32 ? name : name.substring(0, 30).strip() + "...";
+	}
+
+	/**
+	 * A vanilla button with an item icon before its label, like the buttons in Minecraft's own menus. A long label is
+	 * cut to fit, a label that fits only alone drops the icon, and an icon-only button keeps its label for the narrator.
+	 */
+	private static final class IconButton extends Button {
+		private static final Item[] DISCS = {Items.MUSIC_DISC_13, Items.MUSIC_DISC_CAT, Items.MUSIC_DISC_BLOCKS, Items.MUSIC_DISC_CHIRP,
+				Items.MUSIC_DISC_FAR, Items.MUSIC_DISC_MALL, Items.MUSIC_DISC_MELLOHI, Items.MUSIC_DISC_STAL, Items.MUSIC_DISC_STRAD,
+				Items.MUSIC_DISC_WARD, Items.MUSIC_DISC_WAIT, Items.MUSIC_DISC_PIGSTEP, Items.MUSIC_DISC_OTHERSIDE, Items.MUSIC_DISC_RELIC,
+				Items.MUSIC_DISC_CREATOR, Items.MUSIC_DISC_PRECIPICE, Items.MUSIC_DISC_TEARS, Items.MUSIC_DISC_LAVA_CHICKEN,
+				Items.MUSIC_DISC_BOUNCE};
+		private final ItemStack icon;
+		private final Component trailing;
+		private final boolean iconOnly;
+		/** Set on the source that plays: its icon dances to the beat and music notes play beside it. */
+		private boolean dancing;
+
+		private IconButton(int x, int y, int width, Item icon, Component label, Component trailing, boolean iconOnly, OnPress onPress) {
+			super(x, y, width, 20, label, onPress, DEFAULT_NARRATION);
+			this.icon = new ItemStack(icon);
+			this.trailing = trailing;
+			this.iconOnly = iconOnly;
+		}
+
+		/** The music disc a song wears in the menus, the same one every time for the same name. */
+		private static Item disc(String name) {
+			return DISCS[Math.floorMod(name.hashCode(), DISCS.length)];
+		}
+
+		@Override
+		protected void extractContents(GuiGraphicsExtractor gui, int mouseX, int mouseY, float partialTick) {
+			extractDefaultSprite(gui);
+			Font font = Minecraft.getInstance().font;
+			int x = getX();
+			int y = getY();
+			int width = getWidth();
+			int bob = dancing ? Math.round(hop(0)) : 0;
+			if (iconOnly) {
+				gui.item(icon, x + (width - 16) / 2, y + 2);
+				return;
+			}
+			int color = active ? 0xFFFFFFFF : GRAY;
+			int tail = dancing ? 20 : trailing == null ? 0 : font.width(trailing) + 6;
+			if (dancing) {
+				gui.blitSprite(RenderPipelines.GUI_TEXTURED, MUSIC_NOTES, x + width - 18, y + 2, 16, 16);
+			} else if (trailing != null) {
+				gui.text(font, trailing, x + width - 4 - font.width(trailing), y + 6, GRAY, true);
+			}
+			String label = getMessage().getString();
+			if (font.width(label) + 22 + tail > width - 4 && font.width(label) + tail <= width - 8) {
+				gui.text(font, label, x + (width - tail - font.width(label)) / 2, y + 6, color, true);
+				return;
+			}
+			int room = width - 26 - tail;
+			if (font.width(label) > room) {
+				label = font.plainSubstrByWidth(label, room - font.width("...")).strip() + "...";
+			}
+			gui.item(icon, x + 2, y + 2 - bob);
+			gui.text(font, label, x + 22, y + 6, color, true);
+		}
+	}
+
+	/**
+	 * In-world music menu. The game keeps running and the middle stays clear, so the player watches the beat cue while
+	 * tapping or nudging the offset. A now-playing banner on top says what the mod is doing; music sources sit on the
+	 * left and sync on the right, on Minecraft's own popup panels.
 	 */
 	private static final class DiscoScreen extends Screen {
-		private static final int PAGE_SIZE = 4;
+		/** GUI pixels kept clear on each side of the crosshair. The beat cue reaches 24 at most, sparks included. */
+		private static final int CLEAR = 32;
+		/** Top of the columns, under the banner. */
+		private static final int TOP = 46;
+		private static final int ROW = 22;
+		/** Margin inside the panel sprite, whose border is 6 pixels. */
+		private static final int PAD = 6;
 		private int page;
+		private int pages;
+		private int ticks;
+		private int left;
+		private int column;
+		private int right;
+		private int musicBottom;
 		private List<String> list = List.of();
+		private final List<String> pageSongs = new ArrayList<>();
+		private final List<IconButton> songButtons = new ArrayList<>();
+		/** Null when the system audio entry is on another page. */
+		private IconButton liveButton;
+		private Button stopButton;
+		private Button earlier;
+		private Button later;
+		private Button tap;
+		private Button half;
+		private Button twice;
 		private Button apply;
 
 		private DiscoScreen() {
@@ -1660,90 +1949,397 @@ public final class MineAtDisco implements ClientModInitializer {
 
 		@Override
 		protected void init() {
-			int cx = width / 2;
-			int top = 36;
-			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.half"),
-					b -> scaleTempo(false)).bounds(cx - 156, top, 36, 20).build());
-			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.double"),
-					b -> scaleTempo(true)).bounds(cx - 116, top, 36, 20).build());
-			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.earlier"),
-					b -> saveOffset(Mth.clamp((int) Math.round(offset * 1000) - 10, -500, 500)))
-					.bounds(cx - 76, top, 44, 20).build());
-			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.tap"),
-					b -> tapOffset()).bounds(cx - 28, top, 80, 20).build());
-			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.later"),
-					b -> saveOffset(Mth.clamp((int) Math.round(offset * 1000) + 10, -500, 500)))
-					.bounds(cx + 56, top, 44, 20).build());
-			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.stop"),
-					b -> stop()).bounds(cx + 104, top, 52, 20).build());
-			apply = addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.apply"), b -> {
+			left = 10;
+			column = Math.min(160, width / 2 - CLEAR - left);
+			right = width - left - column;
+			// The columns end above the line where the game shows tap results and other short messages.
+			int bottom = height - 84;
+
+			addRenderableWidget(new IconButton(left, TOP, column - 44, Items.SPYGLASS, Component.translatable("mineatdisco.menu.youtube"),
+					null, false, b -> minecraft.gui.setScreen(new SearchScreen(this))))
+					.setTooltip(Tooltip.create(Component.translatable("mineatdisco.menu.youtube.tooltip")));
+			addRenderableWidget(new IconButton(left + column - 42, TOP, 20, Items.CHEST, Component.translatable("mineatdisco.menu.folder"),
+					null, true, b -> Blaze3D.openPath(SONGS)))
+					.setTooltip(Tooltip.create(Component.translatable("mineatdisco.menu.folder.tooltip", SONGS.toAbsolutePath().toString())));
+			stopButton = addRenderableWidget(new IconButton(left + column - 20, TOP, 20, Items.BARRIER, Component.translatable("mineatdisco.menu.stop"),
+					null, true, b -> stopWithMessage()));
+			stopButton.setTooltip(Tooltip.create(Component.translatable("mineatdisco.menu.stop.tooltip")));
+
+			// Sources: system audio first, then the songs, a page at a time with a row kept for the pager.
+			list = songs();
+			int listTop = TOP + ROW;
+			int entries = list.size() + 1;
+			int fit = Math.max(1, (bottom - listTop + 2) / ROW);
+			int pageSize = entries <= fit ? fit : Math.max(1, fit - 1);
+			pages = (entries + pageSize - 1) / pageSize;
+			page = Mth.clamp(page, 0, pages - 1);
+			int shown = Math.min(pageSize, entries - page * pageSize);
+			liveButton = null;
+			pageSongs.clear();
+			songButtons.clear();
+			for (int i = 0; i < shown; i++) {
+				int index = page * pageSize + i;
+				int y = listTop + i * ROW;
+				if (index == 0) {
+					liveButton = addRenderableWidget(new IconButton(left, y, column, Items.JUKEBOX, Component.translatable("mineatdisco.menu.live"),
+							null, false, b -> askLive(minecraft, this)));
+					liveButton.setTooltip(Tooltip.create(Component.translatable(WINDOWS ? "mineatdisco.menu.live.tooltip" : "mineatdisco.live.windows")));
+					continue;
+				}
+				String song = list.get(index - 1);
+				pageSongs.add(song);
+				IconButton button = new IconButton(left, y, column, IconButton.disc(song), Component.literal(song), null, false,
+						b -> playSong(song, minecraft));
+				button.setTooltip(Tooltip.create(Component.translatable("mineatdisco.menu.song.tooltip", song)));
+				songButtons.add(addRenderableWidget(button));
+			}
+			if (list.isEmpty()) {
+				// Room for the empty-state text under the system audio entry.
+				musicBottom = listTop + ROW + font.split(Component.translatable("mineatdisco.menu.empty"), column).size() * 9;
+			} else {
+				musicBottom = listTop + (pages > 1 ? pageSize : shown) * ROW - 2;
+			}
+			if (pages > 1) {
+				int y = listTop + pageSize * ROW;
+				addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.prev"), b -> turnPage(-1))
+						.bounds(left, y, 20, 20).tooltip(Tooltip.create(Component.translatable("mineatdisco.menu.prev.tooltip"))).build());
+				addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.next"), b -> turnPage(1))
+						.bounds(left + 56, y, 20, 20).tooltip(Tooltip.create(Component.translatable("mineatdisco.menu.next.tooltip"))).build());
+				musicBottom = y + 20;
+			}
+
+			// Tap gets a full row: it is the main way to calibrate, and the widest target.
+			int row = TOP + ROW;
+			tap = addRenderableWidget(new IconButton(right, row, column, Items.NOTE_BLOCK, Component.translatable("mineatdisco.menu.tap"),
+					null, false, b -> tapOffset()));
+			tap.setTooltip(Tooltip.create(Component.translatable("mineatdisco.menu.tap.tooltip", tapKey.getTranslatedKeyMessage())));
+			row += ROW;
+			int halfWidth = (column - 2) / 2;
+			earlier = addRenderableWidget(Button.builder(Component.empty(), b -> nudge(-1))
+					.bounds(right, row, halfWidth, 20).tooltip(Tooltip.create(Component.translatable("mineatdisco.menu.earlier.tooltip"))).build());
+			later = addRenderableWidget(Button.builder(Component.empty(), b -> nudge(1))
+					.bounds(right + column - halfWidth, row, halfWidth, 20).tooltip(Tooltip.create(Component.translatable("mineatdisco.menu.later.tooltip"))).build());
+			row += ROW;
+			half = addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.half"), b -> scaleTempo(false))
+					.bounds(right, row, halfWidth, 20).tooltip(Tooltip.create(Component.translatable("mineatdisco.menu.half.tooltip"))).build());
+			twice = addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.double"), b -> scaleTempo(true))
+					.bounds(right + column - halfWidth, row, halfWidth, 20).tooltip(Tooltip.create(Component.translatable("mineatdisco.menu.double.tooltip"))).build());
+			row += ROW + 12;
+			apply = addRenderableWidget(Button.builder(Component.empty(), b -> {
 				Integer suggestion = suggestedOffset();
 				if (suggestion != null) {
 					saveOffset(suggestion);
 				}
-			}).bounds(cx + 100, 64, 56, 16).build());
+			}).bounds(right, row, column, 20).tooltip(Tooltip.create(Component.translatable("mineatdisco.menu.apply.tooltip"))).build());
+		}
 
-			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.live"),
-					b -> startLive(minecraft)).bounds(cx - 100, height / 2 + 14, 200, 20).build());
-			list = songs();
-			int pages = Math.max(1, (list.size() + PAGE_SIZE - 1) / PAGE_SIZE);
-			page = Mth.clamp(page, 0, pages - 1);
-			int listTop = height / 2 + 38;
-			for (int i = 0; i < PAGE_SIZE && page * PAGE_SIZE + i < list.size(); i++) {
-				String song = list.get(page * PAGE_SIZE + i);
-				addRenderableWidget(Button.builder(Component.literal(song),
-						b -> playSong(song, minecraft)).bounds(cx - 100, listTop + i * 22, 200, 20).build());
+		private void turnPage(int direction) {
+			page = Math.floorMod(page + direction, pages);
+			rebuildWidgets();
+		}
+
+		@Override
+		public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+			if (pages > 1 && mouseX < left + column + PAD && scrollY != 0) {
+				turnPage(scrollY > 0 ? -1 : 1);
+				return true;
 			}
-			if (pages > 1) {
-				addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.prev"), b -> {
-					page = (page + pages - 1) % pages;
-					rebuildWidgets();
-				}).bounds(cx - 126, listTop, 22, 20).build());
-				addRenderableWidget(Button.builder(Component.translatable("mineatdisco.menu.next"), b -> {
-					page = (page + 1) % pages;
-					rebuildWidgets();
-				}).bounds(cx + 104, listTop, 22, 20).build());
+			return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+		}
+
+		/** Moves the offset by 10 ms, or 1 ms with Shift held, toward earlier ({@code -1}) or later ({@code 1}). */
+		private void nudge(int direction) {
+			int step = minecraft.hasShiftDown() ? 1 : 10;
+			int ms = Mth.clamp((int) Math.round(offset * 1000) + direction * step, -500, 500);
+			if (!saveOffset(ms) && minecraft.player != null) {
+				minecraft.player.sendOverlayMessage(Component.translatable("mineatdisco.offset_not_saved", ms).withStyle(ChatFormatting.RED));
 			}
 		}
 
 		@Override
+		public void tick() {
+			// Songs dropped into the folder or downloaded while the menu is open show up within a second.
+			if (++ticks % 20 == 0 && !songs().equals(list)) {
+				rebuildWidgets();
+			}
+		}
+
+		/** What the mod is doing, and a second line with a download's progress or what to do next. */
+		private static Component[] status() {
+			Component first;
+			Component second = null;
+			if (loadingSong != null) {
+				first = Component.translatable("mineatdisco.loading", shortName(loadingSong));
+			} else if (live()) {
+				first = recentBpm() > 0 ? Component.translatable("mineatdisco.live.playing", recentBpm()) : Component.translatable("mineatdisco.live.listening");
+				second = recentBpm() > 0 ? null : Component.translatable("mineatdisco.menu.live.hint");
+			} else if (source != 0 && beats.length >= 2) {
+				first = Component.translatable("mineatdisco.playing", shortName(currentSong), Math.round(BeatTracker.bpm(beats)));
+			} else {
+				first = Component.translatable("mineatdisco.menu.idle");
+				second = Component.translatable("mineatdisco.menu.idle.hint");
+			}
+			String title = downloadTitle;
+			if (title != null) {
+				second = Component.translatable("mineatdisco.youtube.downloading", shortName(title), Math.round(downloadProgress * 100));
+			}
+			return new Component[] {first, second};
+		}
+
+		/** The line under the tempo buttons: the suggested offset, how far the player is from getting one, or null. */
+		private static Component note(Integer suggestion) {
+			int ms = (int) Math.round(offset * 1000);
+			if (suggestion != null) {
+				return Component.translatable("mineatdisco.menu.suggested", Math.abs(suggestion - ms),
+						Component.translatable(suggestion > ms ? "mineatdisco.menu.later_word" : "mineatdisco.menu.earlier_word"));
+			}
+			if (!playing()) {
+				return null;
+			}
+			return clickErrors.size() < CLICKS_FOR_SUGGESTION
+					? Component.translatable("mineatdisco.menu.hits", clickErrors.size(), CLICKS_FOR_SUGGESTION)
+					: Component.translatable("mineatdisco.menu.on_time");
+		}
+
+		@Override
 		public void extractBackground(GuiGraphicsExtractor gui, int mouseX, int mouseY, float partialTick) {
-			// Keep the center around the crosshair clear so the beat cue and pips stay visible while calibrating.
-			gui.fill(width / 2 - 164, 6, width / 2 + 164, suggestedOffset() == null ? 62 : 84, 0x90000000);
+			// No dimming or blur: the world and the beat cue stay in full view.
+			Component[] status = status();
+			int textWidth = Math.max(font.width(status[0]), status[1] == null ? 0 : font.width(status[1]));
+			int bannerWidth = textWidth + 32;
+			int bannerHeight = status[1] == null ? 20 : 30;
+			int x = width / 2 - bannerWidth / 2;
+			gui.blitSprite(RenderPipelines.GUI_TEXTURED, NOW_PLAYING, x, 4, bannerWidth, bannerHeight);
+			int bob = playing() ? Math.round(hop(0)) : 0;
+			gui.blitSprite(RenderPipelines.GUI_TEXTURED, MUSIC_NOTES, x + 6, 4 + (bannerHeight - 16) / 2 - bob, 16, 16, playing() ? 1 : 0.35f);
+			gui.text(font, status[0], x + 26, 10, 0xFFFFFFFF, true);
+			if (status[1] != null) {
+				gui.text(font, status[1], x + 26, 21, GRAY, true);
+			}
+
+			gui.blitSprite(RenderPipelines.GUI_TEXTURED, PANEL, left - PAD, TOP - PAD, column + 2 * PAD, musicBottom - TOP + 2 * PAD);
+			Integer suggestion = suggestedOffset();
+			Component note = note(suggestion);
+			int syncBottom = note == null ? TOP + 3 * ROW + 20 : TOP + 4 * ROW + (suggestion != null ? 32 : font.split(note, column).size() * 9);
+			gui.blitSprite(RenderPipelines.GUI_TEXTURED, PANEL, right - PAD, TOP - PAD, column + 2 * PAD, syncBottom - TOP + 2 * PAD);
 		}
 
 		@Override
 		public void extractRenderState(GuiGraphicsExtractor gui, int mouseX, int mouseY, float partialTick) {
 			Integer suggestion = suggestedOffset();
-			apply.visible = suggestion != null;
-			super.extractRenderState(gui, mouseX, mouseY, partialTick);
-			int cx = width / 2;
-			if (suggestion != null) {
-				gui.centeredText(font, Component.translatable("mineatdisco.menu.suggested", suggestion), cx - 30, 68, 0xFFCCCCCC);
+			int step = minecraft.hasShiftDown() ? 1 : 10;
+			boolean localSong = source != 0 && beats.length >= 4;
+			if (liveButton != null) {
+				liveButton.active = WINDOWS && !live();
+				liveButton.dancing = live();
 			}
-			Component status = live()
-					? recentBpm() > 0 ? Component.translatable("mineatdisco.live.playing", recentBpm())
-							: Component.translatable("mineatdisco.live.listening")
-					: source != 0 && beats.length >= 2
-							? Component.translatable("mineatdisco.playing", currentSong, Math.round(BeatTracker.bpm(beats)))
-							: Component.translatable("mineatdisco.menu.idle");
-			gui.centeredText(font, status, cx, 11, 0xFFFFFFFF);
-			gui.centeredText(font, latencyReported
-					? Component.translatable("mineatdisco.menu.offset_latency", Math.round(offset * 1000), Math.round(latency * 1000))
-					: Component.translatable("mineatdisco.menu.offset", Math.round(offset * 1000)), cx, 23, 0xFFFFD040);
+			stopButton.active = playing() || loadingSong != null;
+			tap.active = playing();
+			half.active = localSong;
+			twice.active = localSong;
+			earlier.setMessage(Component.translatable("mineatdisco.menu.earlier", step));
+			later.setMessage(Component.translatable("mineatdisco.menu.later", step));
+			apply.visible = suggestion != null;
+			if (suggestion != null) {
+				apply.setMessage(Component.translatable("mineatdisco.menu.apply", suggestion));
+			}
+			for (int i = 0; i < songButtons.size(); i++) {
+				String song = pageSongs.get(i);
+				boolean current = source != 0 && song.equals(currentSong);
+				songButtons.get(i).active = !song.equals(loadingSong) && !current;
+				songButtons.get(i).dancing = current;
+			}
+			super.extractRenderState(gui, mouseX, mouseY, partialTick);
+
 			if (list.isEmpty()) {
-				gui.centeredText(font, Component.translatable("mineatdisco.menu.empty", SONGS.toString()),
-						cx, height / 2 + 44, 0xFFCCCCCC);
+				gui.textWithWordWrap(font, Component.translatable("mineatdisco.menu.empty"), left, TOP + 2 * ROW + 1, column, GRAY);
+			}
+			if (pages > 1) {
+				gui.centeredText(font, Component.translatable("mineatdisco.menu.page", page + 1, pages), left + 38, musicBottom - 14, GRAY);
+			}
+			// The clock item turns with the time of day, a small Minecraft touch beside the timing numbers.
+			gui.item(new ItemStack(Items.CLOCK), right, TOP + 2);
+			gui.text(font, Component.translatable("mineatdisco.menu.offset", Math.round(offset * 1000)), right + 20, TOP + 1, 0xFFFFFFFF, true);
+			if (latencyReported) {
+				gui.text(font, Component.translatable("mineatdisco.menu.latency", Math.round(latency * 1000)), right + 20, TOP + 11, GRAY, true);
+			}
+			Component note = note(suggestion);
+			if (note != null) {
+				gui.textWithWordWrap(font, note, right, TOP + 4 * ROW, column, GRAY);
 			}
 		}
 
 		@Override
 		public boolean keyPressed(KeyEvent event) {
-			if (event.key() == InputConstants.KEY_SPACE) {
+			if (event.key() == InputConstants.KEY_SPACE || tapKey.matches(event)) {
 				tapOffset();
 				return true;
 			}
+			if (menuKey.matches(event)) {
+				onClose();
+				return true;
+			}
 			return super.keyPressed(event);
+		}
+	}
+
+	/** Shown when a world opens with Master or Music at 0%: songs play on Music, so the sliders are right here. */
+	private static final class VolumeScreen extends Screen {
+		private VolumeScreen() {
+			super(Component.translatable("mineatdisco.volume.title"));
+		}
+
+		@Override
+		protected void init() {
+			Options options = minecraft.options;
+			int x = width / 2 - 100;
+			int y = height / 2 - 6;
+			addRenderableWidget(options.getSoundSourceOptionInstance(SoundSource.MASTER).createButton(options, x, y, 200));
+			addRenderableWidget(options.getSoundSourceOptionInstance(SoundSource.MUSIC).createButton(options, x, y + 24, 200));
+			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.volume.play"), b -> onClose()).bounds(x, y + 56, 200, 20).build());
+		}
+
+		@Override
+		public void onClose() {
+			minecraft.options.save();
+			super.onClose();
+		}
+
+		@Override
+		public void extractRenderState(GuiGraphicsExtractor gui, int mouseX, int mouseY, float partialTick) {
+			super.extractRenderState(gui, mouseX, mouseY, partialTick);
+			gui.centeredText(font, title, width / 2, height / 2 - 56, 0xFFFFFFFF);
+			var lines = font.split(Component.translatable("mineatdisco.volume.message"), 280);
+			for (int i = 0; i < lines.size(); i++) {
+				gui.centeredText(font, lines.get(i), width / 2, height / 2 - 40 + i * 10, GRAY);
+			}
+		}
+	}
+
+	/** Searches YouTube from inside the game and saves the pick into the songs folder through yt-dlp. */
+	private static final class SearchScreen extends Screen {
+		private static String lastQuery = "";
+		private static List<YouTube.Result> results = List.of();
+		private final Screen parent;
+		private final List<IconButton> resultButtons = new ArrayList<>();
+		private final List<YouTube.Result> shownResults = new ArrayList<>();
+		private EditBox box;
+		/** The line under the search box: searching, no results, an error. Null while results show. */
+		private Component message;
+		private boolean missingTools;
+		private int request;
+
+		private SearchScreen(Screen parent) {
+			super(Component.translatable("mineatdisco.youtube.title"));
+			this.parent = parent;
+		}
+
+		@Override
+		protected void init() {
+			int w = Math.min(300, width - 20);
+			int x = width / 2 - w / 2;
+			box = new EditBox(font, x, 28, w - 66, 20, Component.translatable("mineatdisco.youtube.hint"));
+			box.setMaxLength(100);
+			box.setValue(lastQuery);
+			box.setHint(Component.translatable("mineatdisco.youtube.hint").withStyle(EditBox.SEARCH_HINT_STYLE));
+			addRenderableWidget(box);
+			setInitialFocus(box);
+			addRenderableWidget(Button.builder(Component.translatable("mineatdisco.youtube.search"), b -> search())
+					.bounds(x + w - 62, 28, 62, 20).build());
+			if (missingTools) {
+				addRenderableWidget(Button.builder(Component.translatable("mineatdisco.youtube.copy"), b -> {
+					minecraft.keyboardHandler.setClipboard(YouTube.INSTALL);
+					message = Component.translatable("mineatdisco.youtube.copied", YouTube.INSTALL);
+				}).bounds(width / 2 - 100, 92, 200, 20).build());
+			}
+			resultButtons.clear();
+			shownResults.clear();
+			int top = 58;
+			int fit = Math.max(1, (height - 50 - top) / 22);
+			for (int i = 0; message == null && i < Math.min(fit, results.size()); i++) {
+				YouTube.Result result = results.get(i);
+				int seconds = Math.max(0, result.seconds());
+				Component length = result.seconds() > 0 ? Component.literal(seconds / 60 + ":" + String.format("%02d", seconds % 60))
+						: Component.translatable("mineatdisco.youtube.live");
+				IconButton button = new IconButton(x, top + i * 22, w, IconButton.disc(YouTube.fileName(result.title())),
+						Component.literal(result.title()), length, false, b -> download(result));
+				button.setTooltip(Tooltip.create(result.playable()
+						? Component.translatable("mineatdisco.youtube.result.tooltip", result.title())
+						: Component.translatable("mineatdisco.youtube.too_long", YouTube.MAX_SECONDS / 60)));
+				resultButtons.add(addRenderableWidget(button));
+				shownResults.add(result);
+			}
+			addRenderableWidget(Button.builder(CommonComponents.GUI_DONE, b -> onClose()).bounds(width / 2 - 100, height - 28, 200, 20).build());
+		}
+
+		private void search() {
+			String query = box.getValue().strip();
+			if (query.isEmpty()) {
+				return;
+			}
+			lastQuery = query;
+			int mine = ++request;
+			message = Component.translatable("mineatdisco.youtube.searching");
+			missingTools = false;
+			rebuildWidgets();
+			CompletableFuture.supplyAsync(() -> {
+				try {
+					return YouTube.search(query, toolDirs());
+				} catch (IOException | InterruptedException e) {
+					throw new CompletionException(e);
+				}
+			}).whenCompleteAsync((found, error) -> {
+				if (mine != request) {
+					return;
+				}
+				if (error != null) {
+					Throwable cause = error.getCause() == null ? error : error.getCause();
+					missingTools = cause instanceof YouTube.MissingTools;
+					if (!missingTools) {
+						LOGGER.warn("Mine at Disco could not search YouTube: {}", cause.getMessage());
+					}
+					message = Component.translatable(missingTools ? "mineatdisco.youtube.missing" : "mineatdisco.youtube.search_failed");
+					results = List.of();
+				} else {
+					results = found;
+					message = found.isEmpty() ? Component.translatable("mineatdisco.youtube.none", query) : null;
+				}
+				rebuildWidgets();
+			}, minecraft);
+		}
+
+		@Override
+		public boolean keyPressed(KeyEvent event) {
+			if ((event.key() == InputConstants.KEY_RETURN || event.key() == InputConstants.KEY_NUMPADENTER) && box.isFocused()) {
+				search();
+				return true;
+			}
+			return super.keyPressed(event);
+		}
+
+		@Override
+		public void onClose() {
+			minecraft.gui.setScreen(parent);
+		}
+
+		@Override
+		public void extractRenderState(GuiGraphicsExtractor gui, int mouseX, int mouseY, float partialTick) {
+			for (int i = 0; i < resultButtons.size(); i++) {
+				resultButtons.get(i).active = shownResults.get(i).playable() && downloadTitle == null;
+			}
+			super.extractRenderState(gui, mouseX, mouseY, partialTick);
+			gui.centeredText(font, title, width / 2, 12, 0xFFFFFFFF);
+			if (message != null) {
+				var lines = font.split(message, Math.min(300, width - 20));
+				for (int i = 0; i < lines.size(); i++) {
+					gui.centeredText(font, lines.get(i), width / 2, 58 + i * 10, GRAY);
+				}
+			}
+			String downloading = downloadTitle;
+			if (downloading != null) {
+				gui.centeredText(font, Component.translatable("mineatdisco.youtube.downloading", shortName(downloading),
+						Math.round(downloadProgress * 100)), width / 2, height - 42, 0xFFFFFFFF);
+			}
 		}
 	}
 }
